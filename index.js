@@ -25,34 +25,19 @@ app.get('/', (req, res) => {
     <div class="card">
         <h2>Web Gateway</h2>
         <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to browse</p>
-        <form onsubmit="handleForm(event)">
-            <input type="text" id="targetInput" placeholder="https://google.com" required autocomplete="off">
+        <form action="/proxy" method="GET">
+            <input type="text" name="url" placeholder="https://google.com" required autocomplete="off">
             <button type="submit">Go</button>
         </form>
     </div>
-    <script>
-        function handleForm(e) {
-            e.preventDefault();
-            let url = document.getElementById('targetInput').value.trim();
-            if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
-            window.location.href = '/proxy/' + url;
-        }
-    </script>
 </body>
 </html>`);
 });
 
-// Changed from /proxy/* to /proxy* to safely handle base paths and queries
-app.get('/proxy*', async (req, res) => {
-    let targetUrl = req.url.replace(/^\/proxy\/?/, '');
-    
-    if (!targetUrl) {
-        return res.redirect('/');
-    }
-    
-    if (!/^https?:\/\//i.test(targetUrl)) {
-        targetUrl = 'https://' + targetUrl;
-    }
+app.get('/proxy', async (req, res) => {
+    let targetUrl = req.query.url;
+    if (!targetUrl) return res.redirect('/');
+    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
 
     try {
         const response = await axios({
@@ -81,7 +66,7 @@ app.get('/proxy*', async (req, res) => {
                 if (trimmed.startsWith('data:') || trimmed.startsWith('javascript:') || trimmed.startsWith('#')) return trimmed;
                 try {
                     const absoluteUrl = new URL(trimmed, targetUrl).href;
-                    return `/proxy/${absoluteUrl}`;
+                    return `/proxy?url=${encodeURIComponent(absoluteUrl)}`;
                 } catch (e) {
                     return trimmed;
                 }
@@ -96,7 +81,7 @@ app.get('/proxy*', async (req, res) => {
 
         return res.send(response.data);
     } catch (err) {
-        res.status(500).send(`Proxy Execution Error: ${err.message}`);
+        res.status(500).send(`Proxy Error: ${err.message}`);
     }
 });
 
