@@ -5,7 +5,6 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Portal Home Page
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -35,95 +34,88 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-// Main Entry Point: Sets the session cookie and loads the initial page
 app.get('/proxy', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.redirect('/');
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
 
-    // Set a session cookie remembering what site the user is currently browsing
     res.setHeader('Set-Cookie', `current_target=${encodeURIComponent(targetUrl)}; Path=/; HttpOnly`);
-
-    await proxyRequest(targetUrl, req, res);
+    await streamProxy(targetUrl, req, res);
 });
 
-// Catch-All Router: Intercepts any relative navigation/search requests (like /results) and proxies them using the active session cookie
 app.get('*', async (req, res, next) => {
-    if (req.path === '/' || req.path === '/proxy') {
-        return next();
-    }
+    if (req.path === '/' || req.path === '/proxy') return next();
 
-    // Read the active target from the cookie
     const cookies = req.headers.cookie || '';
     const match = cookies.match(/current_target=([^;]+)/);
-    if (!match) {
-        return res.redirect('/');
-    }
+    if (!match) return res.redirect('/');
 
     const targetBase = decodeURIComponent(match[1]);
-    
     try {
-        // Construct the full absolute URL from the relative path (e.g., /results?search_query=...)
         const absoluteUrl = new URL(req.url, targetBase).href;
-        await proxyRequest(absoluteUrl, req, res);
+        await streamProxy(absoluteUrl, req, res);
     } catch (err) {
-        res.status(500).send(`Proxy Routing Error: ${err.message}`);
+        res.status(500).send(`Proxy Error: ${err.message}`);
     }
 });
 
-// Core Proxy Fetch & Rewrite Engine
-async function proxyRequest(targetUrl, req, res) {
+// High-speed streaming engine for fast asset delivery
+async function streamProxy(targetUrl, req, res) {
     try {
         const response = await axios({
             method: 'get',
             url: targetUrl,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
                 'Referer': targetUrl
             },
-            responseType: 'arraybuffer',
+            responseType: 'stream',
             maxRedirects: 5,
             validateStatus: () => true
         });
 
-        const contentType = response.headers['content-type'] || 'text/html';
+        const contentType = response.headers['content-type'] || '';
         res.status(response.status);
         res.setHeader('Content-Type', contentType);
 
+        // If it's HTML, parse and stream chunks instantly instead of buffering
         if (contentType.includes('text/html')) {
-            let html = response.data.toString('utf-8');
-            const $ = cheerio.load(html);
+            let data = '';
+            response.data.on('data', chunk => { data += chunk; });
+            response.data.on('end', () => {
+                const $ = cheerio.load(data);
+                const targetHost = new URL(targetUrl).hostname;
 
-            // Optional cleanup for absolute links to keep them flowing smoothly
-            const rewriteUrl = (val) => {
-                if (!val) return val;
-                const trimmed = val.trim();
-                if (trimmed.startsWith('data:') || trimmed.startsWith('javascript:') || trimmed.startsWith('#')) return trimmed;
-                try {
-                    const absUrl = new URL(trimmed, targetUrl).href;
-                    // If it's on the same domain, let relative/catch-all handle it cleanly
-                    const targetHost = new URL(targetUrl).hostname;
-                    const absHost = new URL(absUrl).hostname;
-                    if (absHost.includes(targetHost) || targetHost.includes(absHost)) {
-                        return absUrl.replace(new URL(targetUrl).origin, '');
+                const rewriteUrl = (val) => {
+                    if (!val) return val;
+                    const trimmed = val.trim();
+                    if (trimmed.startsWith('data:') || trimmed.startsWith('javascript:') || trimmed.startsWith('#')) return trimmed;
+                    try {
+                        const absUrl = new URL(trimmed, targetUrl).href;
+                        const absHost = new URL(absUrl).hostname;
+                        if (absHost.includes(targetHost) || targetHost.includes(absHost)) {
+                            return absUrl.replace(new URL(targetUrl).origin, '');
+                        }
+                        return `/proxy?url=${encodeURIComponent(absUrl)}`;
+                    } catch (e) {
+                        return trimmed;
                     }
-                    return `/proxy?url=${encodeURIComponent(absUrl)}`;
-                } catch (e) {
-                    return trimmed;
-                }
-            };
+                };
 
-            $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
-            $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
-            $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
+                $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
+                $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
+                $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
 
-            return res.send($.html());
+                res.send($.html());
+            });
+        } else {
+            // For images, scripts, and CSS, pipe them directly to the client at full network speed
+            response.data.pipe(res);
         }
-
-        return res.send(response.data);
     } catch (err) {
-        res.status(500).send(`Proxy Execution Error: ${err.message}`);
+        res.status(500).send(`Streaming Error: ${err.message}`);
     }
 }
 
