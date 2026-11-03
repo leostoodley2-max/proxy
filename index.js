@@ -24,18 +24,27 @@ app.get('/', (req, res) => {
 <body>
     <div class="card">
         <h2>Web Gateway</h2>
-        <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to load</p>
-        <form action="/proxy" method="GET">
-            <input type="text" name="url" placeholder="https://example.com" required autocomplete="off">
+        <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to browse</p>
+        <form onsubmit="handleForm(event)">
+            <input type="text" id="targetInput" placeholder="https://google.com" required autocomplete="off">
             <button type="submit">Go</button>
         </form>
     </div>
+    <script>
+        function handleForm(e) {
+            e.preventDefault();
+            let url = document.getElementById('targetInput').value.trim();
+            if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+            window.location.href = '/proxy/' + url;
+        }
+    </script>
 </body>
 </html>`);
 });
 
-app.get('/proxy', async (req, res) => {
-    let targetUrl = req.query.url;
+app.get('/proxy/*', async (req, res) => {
+    // Extract everything after /proxy/ including query strings (like ?q=...)
+    let targetUrl = req.url.replace(/^\/proxy\//, '');
     if (!targetUrl) return res.status(400).send('Target URL required.');
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
 
@@ -66,14 +75,16 @@ app.get('/proxy', async (req, res) => {
                 if (trimmed.startsWith('data:') || trimmed.startsWith('javascript:') || trimmed.startsWith('#')) return trimmed;
                 try {
                     const absoluteUrl = new URL(trimmed, targetUrl).href;
-                    return `/proxy?url=${encodeURIComponent(absoluteUrl)}`;
+                    return `/proxy/${absoluteUrl}`;
                 } catch (e) {
                     return trimmed;
                 }
             };
 
+            // Rewrite links, media sources, and form action endpoints so navigation works
             $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
             $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
+            $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
 
             return res.send($.html());
         }
