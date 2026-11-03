@@ -25,22 +25,11 @@ app.get('/', (req, res) => {
     <div class="card">
         <h2>Web Gateway</h2>
         <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to browse</p>
-        <form onsubmit="handleGo(event)">
-            <input type="text" id="targetInput" placeholder="https://youtube.com" required autocomplete="off">
+        <form action="/proxy" method="GET">
+            <input type="text" name="url" placeholder="https://google.com" required autocomplete="off">
             <button type="submit">Go</button>
         </form>
     </div>
-    <script>
-        function handleGo(e) {
-            e.preventDefault();
-            let val = document.getElementById('targetInput').value.trim();
-            if (!val) return;
-            if (!/^https?:\/\//i.test(val)) {
-                val = 'https://' + val;
-            }
-            window.location.href = '/proxy?url=' + encodeURIComponent(val);
-        }
-    </script>
 </body>
 </html>`);
 });
@@ -51,6 +40,15 @@ app.get('/proxy', async (req, res) => {
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
 
     try {
+        // Reconstruct target URL if form inputs were flattened into query parameters
+        const urlObj = new URL(targetUrl);
+        for (const [key, val] of Object.entries(req.query)) {
+            if (key !== 'url') {
+                urlObj.searchParams.set(key, val);
+            }
+        }
+        targetUrl = urlObj.toString();
+
         const response = await axios({
             method: 'get',
             url: targetUrl,
@@ -83,19 +81,16 @@ app.get('/proxy', async (req, res) => {
                 }
             };
 
-            // Rewrite links, media assets, and form actions so they route cleanly through our ?url= proxy
             $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
             $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
             
-            // Explicitly intercept form submissions (like search bars) and map them to our proxy endpoint
+            // Map form actions so they route cleanly through our proxy endpoint
             $('[action]').each((i, el) => {
                 let actionVal = $(el).attr('action');
                 try {
                     let absoluteAction = new URL(actionVal, targetUrl).href;
-                    // Rewrite the form action to point to /proxy?url= with the form's target endpoint
-                    $(el).attr('action', `/proxy?url=${encodeURIComponent(absoluteAction)}`);
-                    // Change method to GET so query parameters append cleanly to our proxy structure
-                    $(el).attr('method', 'GET');
+                    $(el).attr('action', `/proxy`);
+                    // We can add a hidden input or rely on the query reconstruction
                 } catch (e) {}
             });
 
