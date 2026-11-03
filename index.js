@@ -75,7 +75,7 @@ app.get('/fetch', async (req, res) => {
             method: 'get',
             url: targetUrl,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
             responseType: 'arraybuffer',
             validateStatus: () => true
@@ -83,6 +83,11 @@ app.get('/fetch', async (req, res) => {
 
         const contentType = response.headers['content-type'] || 'text/html';
         res.setHeader('Content-Type', contentType);
+
+        // Strip blocking security headers so iframe can render the page
+        res.removeHeader('X-Frame-Options');
+        res.removeHeader('Content-Security-Policy');
+        res.removeHeader('X-Content-Type-Options');
 
         if (contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
