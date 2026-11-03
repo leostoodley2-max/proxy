@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 
@@ -31,7 +30,7 @@ const htmlUI = `
         <button class="btn" onclick="historyBack()">&#8592; Back</button>
         <button class="btn" onclick="reloadFrame()">&#8635; Refresh</button>
         <form id="proxyForm">
-            <input type="text" id="targetUrl" placeholder="Enter domain or URL (e.g., example.com)" required>
+            <input type="text" id="targetUrl" placeholder="Enter URL (e.g., example.com)" required>
             <button type="submit">Browse</button>
         </form>
     </header>
@@ -47,10 +46,9 @@ const htmlUI = `
             let url = input.value.trim();
             if (!url) return;
             
-            // Auto-add https:// if missing
             if (!/^https?:\/\//i.test(url)) {
                 url = 'https://' + url;
-                input.value = url; // Show the corrected URL in the input bar
+                input.value = url;
             }
             
             iframe.src = '/fetch?url=' + encodeURIComponent(url);
@@ -75,7 +73,6 @@ app.get('/fetch', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('Target URL required.');
 
-    // Auto-add https:// on backend if missing
     if (!/^https?:\/\//i.test(targetUrl)) {
         targetUrl = 'https://' + targetUrl;
     }
@@ -86,7 +83,8 @@ app.get('/fetch', async (req, res) => {
             url: targetUrl,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5'
             },
             responseType: 'arraybuffer',
             validateStatus: () => true
@@ -95,12 +93,16 @@ app.get('/fetch', async (req, res) => {
         const contentType = response.headers['content-type'] || 'text/html';
         res.setHeader('Content-Type', contentType);
 
+        // Remove frame restrictions
+        res.removeHeader('X-Frame-Options');
+        res.removeHeader('Content-Security-Policy');
+
         if (contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
             const targetObj = new URL(targetUrl);
             const origin = targetObj.origin;
 
-            // Rewrite links for absolute, relative, and protocol-relative assets
+            // Handle relative and absolute link rewriting
             html = html.replace(/(href|src)=["']([^"']+)["']/g, (match, attr, val) => {
                 if (val.startsWith('http://') || val.startsWith('https://')) {
                     return `${attr}="/fetch?url=${encodeURIComponent(val)}"`;
@@ -108,23 +110,30 @@ app.get('/fetch', async (req, res) => {
                     return `${attr}="/fetch?url=${encodeURIComponent('https:' + val)}"`;
                 } else if (val.startsWith('/')) {
                     return `${attr}="/fetch?url=${encodeURIComponent(origin + val)}"`;
+                } else if (!val.startsWith('#') && !val.startsWith('javascript:') && !val.startsWith('data:')) {
+                    return `${attr}="/fetch?url=${encodeURIComponent(origin + '/' + val)}"`;
                 }
                 return match;
             });
-
-            // Neutralize basic frame-busting scripts
-            const antiFrameBust = `<script>try { if (window.top !== window.self) { window.__defineGetter__('top', () => window.self); } } catch(e) {}</script>`;
-            html = html.replace('<head>', '<head>' + antiFrameBust);
 
             return res.send(html);
         }
 
         res.send(response.data);
     } catch (err) {
-        res.status(500).send(`<h3>Proxy Error:</h3><p>${err.message}</p>`);
+        // Send a readable error page into the iframe so you know why it failed
+        res.status(500).send(`
+            <div style="font-family:sans-serif; padding:40px; color:#333; background:#fee2e2; border:1px solid #f87171; border-radius:8px; margin:20px;">
+                <h2 style="color:#991b1b; margin-bottom:10px;">Proxy Navigation Failed</h2>
+                <p>Could not fetch target resource via proxy server.</p>
+                <p style="margin-top:15px; font-family:monospace; background:#fff; padding:10px; border-radius:4px;">Error: ${err.message}</p>
+                <p style="margin-top:15px; font-size:14px; color:#555;">Tip: Try testing with a basic site like <strong>example.com</strong>. Heavy sites (like Google or YouTube) use advanced anti-bot protections that block simple server proxies.</p>
+            </div>
+        `);
     }
 });
 
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });
+
