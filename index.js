@@ -1,3 +1,4 @@
+
 const express = require('express');
 const axios = require('axios');
 
@@ -30,7 +31,7 @@ const htmlUI = `
         <button class="btn" onclick="historyBack()">&#8592; Back</button>
         <button class="btn" onclick="reloadFrame()">&#8635; Refresh</button>
         <form id="proxyForm">
-            <input type="text" id="targetUrl" placeholder="Enter full URL (e.g., https://example.com)" required>
+            <input type="text" id="targetUrl" placeholder="Enter domain or URL (e.g., example.com)" required>
             <button type="submit">Browse</button>
         </form>
     </header>
@@ -45,9 +46,13 @@ const htmlUI = `
             e.preventDefault();
             let url = input.value.trim();
             if (!url) return;
+            
+            // Auto-add https:// if missing
             if (!/^https?:\/\//i.test(url)) {
                 url = 'https://' + url;
+                input.value = url; // Show the corrected URL in the input bar
             }
+            
             iframe.src = '/fetch?url=' + encodeURIComponent(url);
         });
 
@@ -70,12 +75,18 @@ app.get('/fetch', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('Target URL required.');
 
+    // Auto-add https:// on backend if missing
+    if (!/^https?:\/\//i.test(targetUrl)) {
+        targetUrl = 'https://' + targetUrl;
+    }
+
     try {
         const response = await axios({
             method: 'get',
             url: targetUrl,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
             },
             responseType: 'arraybuffer',
             validateStatus: () => true
@@ -84,30 +95,33 @@ app.get('/fetch', async (req, res) => {
         const contentType = response.headers['content-type'] || 'text/html';
         res.setHeader('Content-Type', contentType);
 
-        // Strip blocking security headers so iframe can render the page
-        res.removeHeader('X-Frame-Options');
-        res.removeHeader('Content-Security-Policy');
-        res.removeHeader('X-Content-Type-Options');
-
         if (contentType.includes('text/html')) {
             let html = response.data.toString('utf-8');
-            const origin = new URL(targetUrl).origin;
+            const targetObj = new URL(targetUrl);
+            const origin = targetObj.origin;
 
+            // Rewrite links for absolute, relative, and protocol-relative assets
             html = html.replace(/(href|src)=["']([^"']+)["']/g, (match, attr, val) => {
                 if (val.startsWith('http://') || val.startsWith('https://')) {
                     return `${attr}="/fetch?url=${encodeURIComponent(val)}"`;
+                } else if (val.startsWith('//')) {
+                    return `${attr}="/fetch?url=${encodeURIComponent('https:' + val)}"`;
                 } else if (val.startsWith('/')) {
                     return `${attr}="/fetch?url=${encodeURIComponent(origin + val)}"`;
                 }
                 return match;
             });
 
+            // Neutralize basic frame-busting scripts
+            const antiFrameBust = `<script>try { if (window.top !== window.self) { window.__defineGetter__('top', () => window.self); } } catch(e) {}</script>`;
+            html = html.replace('<head>', '<head>' + antiFrameBust);
+
             return res.send(html);
         }
 
         res.send(response.data);
     } catch (err) {
-        res.status(500).send(`Failed to proxy request: ${err.message}`);
+        res.status(500).send(`<h3>Proxy Error:</h3><p>${err.message}</p>`);
     }
 });
 
