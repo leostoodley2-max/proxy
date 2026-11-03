@@ -25,11 +25,22 @@ app.get('/', (req, res) => {
     <div class="card">
         <h2>Web Gateway</h2>
         <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to browse</p>
-        <form action="/proxy" method="GET">
-            <input type="text" name="url" placeholder="https://google.com" required autocomplete="off">
+        <form onsubmit="handleGo(event)">
+            <input type="text" id="targetInput" placeholder="https://youtube.com" required autocomplete="off">
             <button type="submit">Go</button>
         </form>
     </div>
+    <script>
+        function handleGo(e) {
+            e.preventDefault();
+            let val = document.getElementById('targetInput').value.trim();
+            if (!val) return;
+            if (!/^https?:\/\//i.test(val)) {
+                val = 'https://' + val;
+            }
+            window.location.href = '/proxy?url=' + encodeURIComponent(val);
+        }
+    </script>
 </body>
 </html>`);
 });
@@ -72,9 +83,21 @@ app.get('/proxy', async (req, res) => {
                 }
             };
 
+            // Rewrite links, media assets, and form actions so they route cleanly through our ?url= proxy
             $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
             $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
-            $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
+            
+            // Explicitly intercept form submissions (like search bars) and map them to our proxy endpoint
+            $('[action]').each((i, el) => {
+                let actionVal = $(el).attr('action');
+                try {
+                    let absoluteAction = new URL(actionVal, targetUrl).href;
+                    // Rewrite the form action to point to /proxy?url= with the form's target endpoint
+                    $(el).attr('action', `/proxy?url=${encodeURIComponent(absoluteAction)}`);
+                    // Change method to GET so query parameters append cleanly to our proxy structure
+                    $(el).attr('method', 'GET');
+                } catch (e) {}
+            });
 
             return res.send($.html());
         }
