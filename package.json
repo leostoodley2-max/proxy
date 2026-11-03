@@ -1,13 +1,14 @@
-
 {
-  "name": "robust-node-proxy",
-  "version": "2.1.0",
+  "name": "dom-rewriting-web-proxy",
+  "version": "3.0.0",
+  "description": "A full-featured Node.js HTML web proxy with DOM rewriting",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
     "express": "^4.19.2"
   },
   "engines": {
