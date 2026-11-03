@@ -6,8 +6,9 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "unblocker": "^1.2.0"
+    "axios": "^1.6.8",
+    "cheerio": "^1.0.0-rc.12",
+    "express": "^4.19.2"
   },
   "engines": {
     "node": ">=18.0.0"
