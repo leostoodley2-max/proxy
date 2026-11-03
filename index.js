@@ -42,11 +42,17 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
-app.get('/proxy/*', async (req, res) => {
-    // Extract everything after /proxy/ including query strings (like ?q=...)
-    let targetUrl = req.url.replace(/^\/proxy\//, '');
-    if (!targetUrl) return res.status(400).send('Target URL required.');
-    if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
+// Changed from /proxy/* to /proxy* to safely handle base paths and queries
+app.get('/proxy*', async (req, res) => {
+    let targetUrl = req.url.replace(/^\/proxy\/?/, '');
+    
+    if (!targetUrl) {
+        return res.redirect('/');
+    }
+    
+    if (!/^https?:\/\//i.test(targetUrl)) {
+        targetUrl = 'https://' + targetUrl;
+    }
 
     try {
         const response = await axios({
@@ -81,7 +87,6 @@ app.get('/proxy/*', async (req, res) => {
                 }
             };
 
-            // Rewrite links, media sources, and form action endpoints so navigation works
             $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
             $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
             $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
