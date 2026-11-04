@@ -1,6 +1,7 @@
 {
-  "name": "render-proxy",
+  "name": "web-gateway",
   "version": "1.0.0",
+  "description": "Lightweight proxy gateway",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,8 +10,6 @@
     "axios": "^1.6.8",
     "cheerio": "^1.0.0-rc.12",
     "express": "^4.19.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }
+
