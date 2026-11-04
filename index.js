@@ -5,7 +5,9 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Portal Home Page: Clears session cookie so you never get stuck on a target site
 app.get('/', (req, res) => {
+    res.setHeader('Set-Cookie', 'current_target=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
     res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -26,7 +28,7 @@ app.get('/', (req, res) => {
         <h2>Web Gateway</h2>
         <p style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Enter a URL to browse</p>
         <form action="/proxy" method="GET">
-            <input type="text" name="url" placeholder="https://youtube.com" required autocomplete="off">
+            <input type="text" name="url" placeholder="https://html.duckduckgo.com" required autocomplete="off">
             <button type="submit">Go</button>
         </form>
     </div>
@@ -59,8 +61,13 @@ app.get('*', async (req, res, next) => {
     }
 });
 
-// High-speed streaming engine for fast asset delivery
 async function streamProxy(targetUrl, req, res) {
+    // TWEAK 1: Drop tracking domains immediately to free up Render's CPU/bandwidth
+    const blockedDomains = ['google-analytics.com', 'googlesyndication.com', 'doubleclick.net', 'facebook.net'];
+    if (blockedDomains.some(domain => targetUrl.includes(domain))) {
+        return res.status(204).end();
+    }
+
     try {
         const response = await axios({
             method: 'get',
@@ -68,6 +75,7 @@ async function streamProxy(targetUrl, req, res) {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br', // TWEAK 2: Compressed payloads
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Referer': targetUrl
             },
@@ -80,12 +88,12 @@ async function streamProxy(targetUrl, req, res) {
         res.status(response.status);
         res.setHeader('Content-Type', contentType);
 
-        // If it's HTML, parse and stream chunks instantly instead of buffering
         if (contentType.includes('text/html')) {
             let data = '';
             response.data.on('data', chunk => { data += chunk; });
             response.data.on('end', () => {
-                const $ = cheerio.load(data);
+                // TWEAK 3: High-speed Cheerio parsing options
+                const $ = cheerio.load(data, { decodeEntities: false });
                 const targetHost = new URL(targetUrl).hostname;
 
                 const rewriteUrl = (val) => {
@@ -111,7 +119,6 @@ async function streamProxy(targetUrl, req, res) {
                 res.send($.html());
             });
         } else {
-            // For images, scripts, and CSS, pipe them directly to the client at full network speed
             response.data.pipe(res);
         }
     } catch (err) {
