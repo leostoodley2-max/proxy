@@ -5,9 +5,8 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Portal Home Page: Clears session cookie so you never get stuck on a target site
+// Portal Home Page: Clean slate, no cookies needed
 app.get('/', (req, res) => {
-    res.setHeader('Set-Cookie', 'current_target=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT');
     res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -36,33 +35,39 @@ app.get('/', (req, res) => {
 </html>`);
 });
 
+// Proxy entry point: redirects into our explicit path structure /proxy/targetdomain.com/...
 app.get('/proxy', async (req, res) => {
     let targetUrl = req.query.url;
     if (!targetUrl) return res.redirect('/');
     if (!/^https?:\/\//i.test(targetUrl)) targetUrl = 'https://' + targetUrl;
 
-    res.setHeader('Set-Cookie', `current_target=${encodeURIComponent(targetUrl)}; Path=/; HttpOnly`);
-    await streamProxy(targetUrl, req, res);
-});
-
-app.get('*', async (req, res, next) => {
-    if (req.path === '/' || req.path === '/proxy') return next();
-
-    const cookies = req.headers.cookie || '';
-    const match = cookies.match(/current_target=([^;]+)/);
-    if (!match) return res.redirect('/');
-
-    const targetBase = decodeURIComponent(match[1]);
     try {
-        const absoluteUrl = new URL(req.url, targetBase).href;
-        await streamProxy(absoluteUrl, req, res);
-    } catch (err) {
-        res.status(500).send(`Proxy Error: ${err.message}`);
+        const parsed = new URL(targetUrl);
+        return res.redirect(`/proxy/${parsed.host}${parsed.pathname}${parsed.search}`);
+    } catch (e) {
+        return res.redirect('/');
     }
 });
 
+// Explicit Path Router: /proxy/<domain>/<path> ensures zero cookie stickiness
+app.get('/proxy/:domain/*', async (req, res) => {
+    const domain = req.params.domain;
+    const subPath = req.params[0] || '';
+    const searchString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    
+    const targetUrl = `https://${domain}/${subPath}${searchString}`;
+    await streamProxy(targetUrl, req, res);
+});
+
+// Catch root domain visits like /proxy/piped.video
+app.get('/proxy/:domain', async (req, res) => {
+    const domain = req.params.domain;
+    const searchString = req.url.includes('?') ? req.url.substring(req.url.indexOf('?')) : '';
+    const targetUrl = `https://${domain}/${searchString}`;
+    await streamProxy(targetUrl, req, res);
+});
+
 async function streamProxy(targetUrl, req, res) {
-    // TWEAK 1: Drop tracking domains immediately to free up Render's CPU/bandwidth
     const blockedDomains = ['google-analytics.com', 'googlesyndication.com', 'doubleclick.net', 'facebook.net'];
     if (blockedDomains.some(domain => targetUrl.includes(domain))) {
         return res.status(204).end();
@@ -75,7 +80,7 @@ async function streamProxy(targetUrl, req, res) {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br', // TWEAK 2: Compressed payloads
+                'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': 'en-US,en;q=0.5',
                 'Referer': targetUrl
             },
@@ -92,9 +97,8 @@ async function streamProxy(targetUrl, req, res) {
             let data = '';
             response.data.on('data', chunk => { data += chunk; });
             response.data.on('end', () => {
-                // TWEAK 3: High-speed Cheerio parsing options
                 const $ = cheerio.load(data, { decodeEntities: false });
-                const targetHost = new URL(targetUrl).hostname;
+                const currentHost = new URL(targetUrl).hostname;
 
                 const rewriteUrl = (val) => {
                     if (!val) return val;
@@ -102,28 +106,13 @@ async function streamProxy(targetUrl, req, res) {
                     if (trimmed.startsWith('data:') || trimmed.startsWith('javascript:') || trimmed.startsWith('#')) return trimmed;
                     try {
                         const absUrl = new URL(trimmed, targetUrl).href;
-                        const absHost = new URL(absUrl).hostname;
-                        if (absHost.includes(targetHost) || targetHost.includes(absHost)) {
-                            return absUrl.replace(new URL(targetUrl).origin, '');
-                        }
-                        return `/proxy?url=${encodeURIComponent(absUrl)}`;
+                        const absParsed = new URL(absUrl);
+                        
+                        // Keep internal links locked inside our explicit /proxy/<domain>/ structure
+                        return `/proxy/${absParsed.host}${absParsed.pathname}${absParsed.search}`;
                     } catch (e) {
                         return trimmed;
                     }
                 };
 
-                $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
-                $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
-                $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
-
-                res.send($.html());
-            });
-        } else {
-            response.data.pipe(res);
-        }
-    } catch (err) {
-        res.status(500).send(`Streaming Error: ${err.message}`);
-    }
-}
-
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+                $('[href]').each((i, el) =>$(el).attr('href', rewriteUrl($(el).attr('href'))));$('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).
