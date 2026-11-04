@@ -108,11 +108,24 @@ async function streamProxy(targetUrl, req, res) {
                         const absUrl = new URL(trimmed, targetUrl).href;
                         const absParsed = new URL(absUrl);
                         
-                        // Keep internal links locked inside our explicit /proxy/<domain>/ structure
                         return `/proxy/${absParsed.host}${absParsed.pathname}${absParsed.search}`;
                     } catch (e) {
                         return trimmed;
                     }
                 };
 
-                $('[href]').each((i, el) =>$(el).attr('href', rewriteUrl($(el).attr('href'))));$('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).
+                $('[href]').each((i, el) => $(el).attr('href', rewriteUrl($(el).attr('href'))));
+                $('[src]').each((i, el) => $(el).attr('src', rewriteUrl($(el).attr('src'))));
+                $('[action]').each((i, el) => $(el).attr('action', rewriteUrl($(el).attr('action'))));
+
+                res.send($.html());
+            });
+        } else {
+            response.data.pipe(res);
+        }
+    } catch (err) {
+        res.status(500).send(`Streaming Error: ${err.message}`);
+    }
+}
+
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
