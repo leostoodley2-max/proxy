@@ -6,7 +6,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "postinstall": "node scripts/install-wireproxy.js"
   },
   "dependencies": {
     "@mercuryworkshop/bare-mux": "^2.1.9",
@@ -14,6 +15,7 @@
     "@mercuryworkshop/scramjet": "^1.1.0",
     "@mercuryworkshop/wisp-js": "^0.4.1",
     "compression": "^1.8.2",
-    "express": "^4.22.3"
+    "express": "^4.22.3",
+    "ipaddr.js": "^2.5.0"
   }
 }
