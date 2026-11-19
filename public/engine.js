@@ -25,6 +25,20 @@
 
   const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
 
+  // Reload this page unless that was already tried in the last 30 seconds
+  // (prevents reload loops). Returns true if a reload was started.
+  function reloadOnce(key) {
+    try {
+      const last = Number(sessionStorage.getItem(key) || 0);
+      if (Date.now() - last < 30000) return false;
+      sessionStorage.setItem(key, String(Date.now()));
+    } catch (e) {
+      return false;
+    }
+    location.reload();
+    return true;
+  }
+
   async function setup() {
     if (!("serviceWorker" in navigator)) {
       throw new Error(
@@ -34,16 +48,25 @@
       );
     }
     await scramjet.init();
+    const existing = await navigator.serviceWorker.getRegistration("/").catch(() => null);
+    const hadWorker = !!(existing && existing.active);
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
     await navigator.serviceWorker.ready;
-    // On a first visit the worker is active but may not control this page yet
-    // (clients.claim() is still running). Some browsers (Safari) then send the
-    // tab's first navigations straight to the server. Wait for control.
+    // Tabs only go through the proxy if the worker controls this page. Some
+    // browsers (Safari) send an uncontrolled page's tab navigations straight
+    // to the server, which can't proxy them. On a first visit control arrives
+    // via clients.claim(); after a hard refresh (Ctrl+Shift+R) it never does,
+    // so reload normally once to get it. Tabs are saved, so nothing is lost.
     if (!navigator.serviceWorker.controller) {
-      await new Promise((resolve) => {
-        navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
-        setTimeout(resolve, 4000);
-      });
+      if (!hadWorker) {
+        await new Promise((resolve) => {
+          navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+          setTimeout(resolve, 4000);
+        });
+      }
+      if (!navigator.serviceWorker.controller && reloadOnce("orbit.claim-reload")) {
+        return new Promise(() => {}); // The page is reloading.
+      }
     }
 
     const wispUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/wisp/";

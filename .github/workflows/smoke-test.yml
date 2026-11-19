@@ -1,0 +1,23 @@
+name: Smoke test
+
+# Loads the proxy in a real browser and checks that tabs go through the
+# service worker and that the app recovers when they don't, so errors like
+# "The proxy couldn't start" are caught before they are deployed.
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
