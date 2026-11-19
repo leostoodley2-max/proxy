@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test/smoke.js",
-    "postinstall": "node scripts/patch-scramjet.js && node scripts/install-wireproxy.js"
+    "bench": "node test/bench.js",
+    "postinstall": "node scripts/patch-scramjet.js && node scripts/precompress.js && node scripts/install-wireproxy.js"
   },
   "dependencies": {
     "@mercuryworkshop/bare-mux": "^2.1.9",
