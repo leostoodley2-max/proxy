@@ -1,7 +1,10 @@
+
+
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Web Proxy</title>
   <style>
@@ -16,29 +19,31 @@
       justify-content: center;
       min-height: 100vh;
       padding: 20px;
+      text-align: center;
     }
     h1 { font-size: 2rem; margin-bottom: 8px; }
-    p { color: #aaa; margin-bottom: 30px; }
+    p { color: #aaa; margin-bottom: 30px; font-size: 15px; }
     form {
       display: flex;
+      flex-direction: column;
       width: 100%;
-      max-width: 600px;
+      max-width: 500px;
       gap: 10px;
     }
     input {
-      flex: 1;
+      width: 100%;
       padding: 14px 18px;
       border-radius: 10px;
-      border: none;
+      border: 1px solid #333;
       font-size: 16px;
       outline: none;
       background: #16213e;
       color: white;
-      border: 1px solid #333;
     }
     input::placeholder { color: #666; }
     button {
-      padding: 14px 24px;
+      width: 100%;
+      padding: 14px;
       background: #e94560;
       color: white;
       border: none;
@@ -47,9 +52,42 @@
       cursor: pointer;
     }
     button:hover { background: #c73652; }
-    .quick-links {
+    .links {
       margin-top: 30px;
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       justify-content: center;
+    }
+    .links a {
+      background: #16213e;
+      color: #aaa;
+      padding: 8px 16px;
+      border-radius: 20px;
+      text-decoration: none;
+      font-size: 14px;
+      border: 1px solid #333;
+    }
+    .links a:hover { color: white; border-color: #e94560; }
+  </style>
+</head>
+<body>
+  <h1>🌐 Web Proxy</h1>
+  <p>Browse the web privately</p>
+  <form method="GET" action="/proxy">
+    <input
+      type="text"
+      name="url"
+      placeholder="Enter a URL e.g. google.com"
+      autofocus
+    />
+    <button type="submit">Browse →</button>
+  </form>
+  <div class="links">
+    <a href="/proxy?url=https://google.com">Google</a>
+    <a href="/proxy?url=https://youtube.com">YouTube</a>
+    <a href="/proxy?url=https://wikipedia.org">Wikipedia</a>
+    <a href="/proxy?url=https://reddit.com">Reddit</a>
+  </div>
+</body>
+</html>
