@@ -18,7 +18,7 @@
     prefix: "/scramjet/",
     files: {
       wasm: "/scram/scramjet.wasm.wasm",
-      all: "/scram/scramjet.all.js",
+      all: "/scram/scramjet.all.js?v=2",
       sync: "/scram/scramjet.sync.js",
     },
   });

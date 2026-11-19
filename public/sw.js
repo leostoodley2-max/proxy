@@ -1,5 +1,5 @@
 // Service worker: every request made by a proxied page passes through here.
-importScripts("/scram/scramjet.all.js");
+importScripts("/scram/scramjet.all.js?v=2");
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();

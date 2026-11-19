@@ -43,7 +43,9 @@ app.use((req, res, next) => {
 });
 
 const cacheLong = { maxAge: "7d", immutable: false };
-app.use("/scram/", express.static(scramjetPath, cacheLong));
+// Scramjet is patched at install time (scripts/patch-scramjet.js), so let
+// browsers revalidate it (cheap 304s) instead of keeping a stale copy for days.
+app.use("/scram/", express.static(scramjetPath, { maxAge: 0 }));
 app.use("/baremux/", express.static(baremuxPath, cacheLong));
 app.use("/libcurl/", express.static(libcurlPath, cacheLong));
 
