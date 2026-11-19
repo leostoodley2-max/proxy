@@ -71,6 +71,19 @@ function connectSocks({ socksHost, socksPort }, host, port, signal) {
 // Check the actual dial address as well, so DNS changes cannot invalidate
 // its decision. Both the SOCKS request and any direct retry use that IP.
 function makeTCPSocket(getRoute, options) {
+  // A page opens many connections to the same few hosts; remember lookups
+  // for a minute instead of resolving the name again for every connection.
+  const lookups = new Map(); // hostname -> { address, expires }
+  async function resolve(hostname) {
+    if (net.isIP(hostname)) return hostname;
+    const hit = lookups.get(hostname);
+    if (hit && hit.expires > Date.now()) return hit.address;
+    const { address } = await dns.lookup(hostname, { order: options.dns_result_order });
+    if (lookups.size >= 1000) lookups.delete(lookups.keys().next().value);
+    lookups.set(hostname, { address, expires: Date.now() + 60_000 });
+    return address;
+  }
+
   return class WispTCPSocket {
     constructor(hostname, port) {
       this.hostname = hostname;
@@ -79,9 +92,7 @@ function makeTCPSocket(getRoute, options) {
     }
 
     async connect() {
-      const ip = net.isIP(this.hostname) ? this.hostname : (await dns.lookup(this.hostname, {
-        order: options.dns_result_order,
-      })).address;
+      const ip = await resolve(this.hostname);
       const range = ipaddr.process(ip).range();
       if ((!options.allow_loopback_ips && ["loopback", "unspecified"].includes(range)) ||
           (!options.allow_private_ips && ["broadcast", "linkLocal", "carrierGradeNat", "private",
@@ -99,12 +110,20 @@ function makeTCPSocket(getRoute, options) {
           signal.throwIfAborted();
           // A destination refusal is authoritative. Only retry failures of
           // the local relay or handshake, before sending application data.
-          if (error.socksReply) throw error;
+          if (error.socksReply) {
+            lookups.delete(this.hostname); // The cached address may be stale.
+            throw error;
+          }
         }
       }
       if (!this.socket) {
         this.socket = net.createConnection({ host: ip, port: this.port, signal });
-        await once(this.socket, "connect");
+        try {
+          await once(this.socket, "connect");
+        } catch (error) {
+          lookups.delete(this.hostname); // The cached address may be stale.
+          throw error;
+        }
       }
       if (signal.aborted) {
         this.socket.destroy();
