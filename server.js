@@ -98,7 +98,6 @@ app.all("/proxy", async (req, res) => {
     if (contentType.includes("javascript")) {
       const js = await response.text();
       const baseUrl = new URL(targetUrl);
-      // Inject a fetch interceptor at the top
       const interceptor = `
 (function() {
   const _originalFetch = window.fetch;
@@ -183,7 +182,27 @@ app.all("/proxy", async (req, res) => {
 (function() {
   const _base = '${new URL(targetUrl).origin}';
   const _proxy = '/proxy?url=';
-
-  // Intercept fetch
   const _fetch = window.fetch;
-  window.fetch = function(
+  window.fetch = function(url, opts) {
+    if (typeof url === 'string' && !url.startsWith('/proxy')) {
+      try {
+        const abs = new URL(url, _base).href;
+        url = _proxy + encodeURIComponent(abs);
+      } catch(e) {}
+    }
+    return _fetch(url, opts);
+  };
+})();
+</script>`;
+    
+    res.send(interceptorScript + $.html());
+  } catch (err) {
+    res.status(500).send(`
+      <style>body{font-family:sans-serif;padding:40px;background:#1a1a2e;color:white;}</style>
+      <h2>❌ Error</h2><p>${err.message}</p>
+      <a href="/" style="color:#e94560;">← Go Back</a>
+    `);
+  }
+});
+
+app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
