@@ -7,7 +7,8 @@
 //                             npm i --no-save playwright && npx playwright install chromium)
 //
 // It doesn't need internet access: a tab counts as working when its page was
-// answered by the service worker, even if the site itself can't be reached.
+// answered by the service worker (the real site, or Scramjet's error page if
+// the site can't be reached).
 
 "use strict";
 
@@ -44,12 +45,15 @@ async function expectProxiedTab(page, label) {
         const info = await frame.evaluate(() => ({
           title: document.title,
           text: document.body ? document.body.innerText : "",
-          viaWorker: !!navigator.serviceWorker && !!navigator.serviceWorker.controller,
-          isWaitPage: !!document.getElementById("msg") && document.title === "Starting…",
+          // The server only ever answers /scramjet/ URLs with the wait page
+          // (or, before the fix, the app itself), so any other page means the
+          // service worker proxied it. (Checking navigator.serviceWorker here
+          // doesn't work: Scramjet hides it from proxied pages.)
+          fromServer: document.title === "Starting…" || !!document.getElementById("tabs"),
         }));
         last = JSON.stringify(info).slice(0, 200);
         assert.ok(!/couldn't start/i.test(info.text), label + ': showed "' + info.text.trim() + '"');
-        if (!info.isWaitPage && info.viaWorker) return;
+        if (!info.fromServer && info.title) return;
       } catch (err) {
         if (err instanceof assert.AssertionError) throw err;
       }
