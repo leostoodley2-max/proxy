@@ -6,18 +6,37 @@ const path = require("path");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// THIS is the key fix - correct path to public folder
 app.use(express.static(path.join(__dirname, "public")));
 app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+// Better headers to bypass verification
+const getHeaders = (targetUrl) => ({
+  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Accept-Encoding": "gzip, deflate, br",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
+  "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+  "Sec-Ch-Ua-Mobile": "?0",
+  "Sec-Ch-Ua-Platform": '"Windows"',
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "none",
+  "Sec-Fetch-User": "?1",
+  "Upgrade-Insecure-Requests": "1",
+  "Referer": targetUrl,
+  "Origin": new URL(targetUrl).origin,
+});
 
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Main proxy route
-app.get("/proxy", async (req, res) => {
+// Handle ALL methods (GET, POST, etc.)
+app.all("/proxy", async (req, res) => {
   let targetUrl = req.query.url;
-
   if (!targetUrl) return res.redirect("/");
 
   if (!/^https?:\/\//i.test(targetUrl)) {
@@ -25,75 +44,146 @@ app.get("/proxy", async (req, res) => {
   }
 
   try {
-    const response = await fetch(targetUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": targetUrl,
-      },
+    const fetchOptions = {
+      method: req.method,
+      headers: getHeaders(targetUrl),
       redirect: "follow",
-    });
+    };
 
+    // Forward POST body
+    if (req.method === "POST") {
+      fetchOptions.body = JSON.stringify(req.body);
+    }
+
+    const response = await fetch(targetUrl, fetchOptions);
     const contentType = response.headers.get("content-type") || "";
 
-    if (!contentType.includes("text/html")) {
-      res.setHeader("Content-Type", contentType);
+    // Forward important response headers
+    const allowedHeaders = [
+      "content-type", "cache-control", "expires",
+      "last-modified", "etag", "vary"
+    ];
+    allowedHeaders.forEach(h => {
+      const val = response.headers.get(h);
+      if (val) res.setHeader(h, val);
+    });
+
+    // Stream non-HTML directly (fast)
+    if (
+      !contentType.includes("text/html") &&
+      !contentType.includes("text/css") &&
+      !contentType.includes("javascript")
+    ) {
+      res.status(response.status);
       response.body.pipe(res);
       return;
     }
 
+    // Rewrite CSS urls
+    if (contentType.includes("text/css")) {
+      const css = await response.text();
+      const baseUrl = new URL(targetUrl);
+      const rewrittenCss = css.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, u) => {
+        if (u.startsWith("data:")) return match;
+        try {
+          const abs = new URL(u, baseUrl).href;
+          return `url('/proxy?url=${encodeURIComponent(abs)}')`;
+        } catch { return match; }
+      });
+      res.setHeader("Content-Type", "text/css");
+      return res.send(rewrittenCss);
+    }
+
+    // Rewrite JS fetch/XHR calls
+    if (contentType.includes("javascript")) {
+      const js = await response.text();
+      const baseUrl = new URL(targetUrl);
+      // Inject a fetch interceptor at the top
+      const interceptor = `
+(function() {
+  const _originalFetch = window.fetch;
+  const _proxyBase = '/proxy?url=';
+  const _base = '${new URL(targetUrl).origin}';
+  window.fetch = function(url, opts) {
+    if (typeof url === 'string' && !url.startsWith('/proxy')) {
+      try {
+        const abs = new URL(url, _base).href;
+        url = _proxyBase + encodeURIComponent(abs);
+      } catch(e) {}
+    }
+    return _originalFetch(url, opts);
+  };
+})();
+`;
+      res.setHeader("Content-Type", "application/javascript");
+      return res.send(interceptor + js);
+    }
+
+    // HTML rewriting
     const html = await response.text();
     const baseUrl = new URL(targetUrl);
     const $ = cheerio.load(html);
 
-    const rewrite = (attr) => {
+    // Remove CSP and other blocking meta tags
+    $('meta[http-equiv="Content-Security-Policy"]').remove();
+    $('meta[http-equiv="X-Frame-Options"]').remove();
+
+    // Rewrite attributes
+    const rewriteAttr = (attr) => {
       $(`[${attr}]`).each((_, el) => {
         const original = $(el).attr(attr);
-        if (!original || original.startsWith("data:") || original.startsWith("javascript:") || original.startsWith("#")) return;
-        let absolute;
+        if (
+          !original ||
+          original.startsWith("data:") ||
+          original.startsWith("javascript:") ||
+          original.startsWith("#") ||
+          original.startsWith("mailto:") ||
+          original.startsWith("tel:")
+        ) return;
         try {
-          absolute = new URL(original, baseUrl).href;
+          const absolute = new URL(original, baseUrl).href;
+          $(el).attr(attr, `/proxy?url=${encodeURIComponent(absolute)}`);
         } catch { return; }
-        $(el).attr(attr, `/proxy?url=${encodeURIComponent(absolute)}`);
       });
     };
 
-    rewrite("href");
-    rewrite("src");
-    rewrite("action");
+    rewriteAttr("href");
+    rewriteAttr("src");
+    rewriteAttr("action");
 
-    const toolbar = `
-    <div id="proxy-bar" style="
-      position:fixed;top:0;left:0;right:0;z-index:99999;
-      background:#1a1a2e;color:white;padding:8px 12px;
-      display:flex;align-items:center;gap:8px;font-family:sans-serif;
-      font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,0.4);">
-      <span style="font-weight:bold;white-space:nowrap;">🌐 Proxy</span>
-      <form method="GET" action="/proxy" style="display:flex;flex:1;gap:6px;">
-        <input name="url" value="${targetUrl}"
-          style="flex:1;padding:5px 10px;border-radius:6px;border:none;font-size:14px;min-width:0;background:white;color:black;"
-          placeholder="Enter URL..." />
-        <button type="submit"
-          style="padding:5px 12px;background:#e94560;color:white;border:none;border-radius:6px;cursor:pointer;">
-          Go
-        </button>
-      </form>
-      <a href="/" style="color:#aaa;text-decoration:none;font-size:12px;">Home</a>
-    </div>
-    <div style="height:46px;"></div>`;
+    // Rewrite srcset
+    $("[srcset]").each((_, el) => {
+      const srcset = $(el).attr("srcset");
+      const rewritten = srcset.replace(/(\S+)(\s+[\d.]+[wx])?/g, (match, u, descriptor) => {
+        if (!u || u.startsWith("data:")) return match;
+        try {
+          const abs = new URL(u, baseUrl).href;
+          return `/proxy?url=${encodeURIComponent(abs)}${descriptor || ""}`;
+        } catch { return match; }
+      });
+      $(el).attr("srcset", rewritten);
+    });
 
-    const finalHtml = $.html().replace("<body", `${toolbar}<body`);
-    res.setHeader("Content-Type", "text/html");
-    res.send(finalHtml);
+    // Rewrite inline styles with url()
+    $("[style]").each((_, el) => {
+      const style = $(el).attr("style");
+      const rewritten = style.replace(/url\(['"]?([^'")]+)['"]?\)/g, (match, u) => {
+        if (u.startsWith("data:")) return match;
+        try {
+          const abs = new URL(u, baseUrl).href;
+          return `url('/proxy?url=${encodeURIComponent(abs)}')`;
+        } catch { return match; }
+      });
+      $(el).attr("style", rewritten);
+    });
 
-  } catch (err) {
-    res.status(500).send(`
-      <style>body{font-family:sans-serif;padding:40px;background:#1a1a2e;color:white;}</style>
-      <h2>❌ Error</h2><p>${err.message}</p>
-      <a href="/" style="color:#e94560;">← Go Back</a>
-    `);
-  }
-});
+    // Inject fetch/XHR interceptor into page
+    const interceptorScript = `
+<script>
+(function() {
+  const _base = '${new URL(targetUrl).origin}';
+  const _proxy = '/proxy?url=';
 
-app.listen(PORT, () => console.log(`Proxy running on port ${PORT}`));
+  // Intercept fetch
+  const _fetch = window.fetch;
+  window.fetch = function(
