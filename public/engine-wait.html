@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Starting…</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #1a1a2e; color: #c9c9d9; font: 16px system-ui, sans-serif; }
+    body { display: grid; place-items: center; text-align: center; padding: 0 24px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <p id="msg">Starting the proxy…</p>
+  <script>
+    // The server sends this page when a proxied URL (/scramjet/...) reaches it
+    // directly, which means the service worker didn't handle the request (it
+    // wasn't in control yet, e.g. on a phone's first visit). Wait for the
+    // worker, then load the same URL again so it goes through the proxy.
+    (async () => {
+      const msg = (text) => { document.getElementById("msg").textContent = text; };
+
+      // Opened on its own (not inside the mini-browser): go to the app.
+      if (window.self === window.top) {
+        location.replace("/");
+        return;
+      }
+      if (!("serviceWorker" in navigator)) {
+        msg("This browser can't run the proxy (service workers are unavailable).");
+        return;
+      }
+
+      const key = "orbit.wait:" + location.pathname + location.search;
+      const tries = Number(sessionStorage.getItem(key) || 0);
+      if (tries >= 3) {
+        sessionStorage.removeItem(key);
+        msg("The proxy couldn't start. Close this tab and open the page again.");
+        return;
+      }
+      sessionStorage.setItem(key, String(tries + 1));
+
+      const timeout = (ms) => new Promise((r) => setTimeout(r, ms));
+      await Promise.race([navigator.serviceWorker.ready, timeout(10000)]).catch(() => {});
+      await timeout(400 * (tries + 1));
+      location.reload();
+    })();
+  </script>
+</body>
+</html>

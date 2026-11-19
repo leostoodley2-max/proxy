@@ -63,8 +63,16 @@ app.use(express.static(path.join(__dirname, "public"), { maxAge: 0 }));
 app.get("/healthz", (req, res) => res.type("text").send("ok"));
 app.get("/egress", (req, res) => res.set("Cache-Control", "no-store").json(getEgress()));
 
-// Any unknown path (e.g. a stale proxied URL opened before the service worker
-// is ready) loads the app instead of a bare 404, so the browser can recover.
+// A proxied URL only reaches the server when the service worker didn't handle
+// it (not in control yet). Never answer with the app itself, or the browser UI
+// would load inside its own tab; send a page that waits for the worker and
+// retries instead.
+app.use("/scramjet/", (req, res) => {
+  res.status(503).set({ "Cache-Control": "no-store", "Retry-After": "1" });
+  res.sendFile(path.join(__dirname, "public", "engine-wait.html"));
+});
+
+// Any other unknown path loads the app instead of a bare 404.
 app.use((req, res) => {
   res.status(404).sendFile(path.join(__dirname, "public", "index.html"));
 });

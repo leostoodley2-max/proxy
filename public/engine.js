@@ -36,6 +36,15 @@
     await scramjet.init();
     await navigator.serviceWorker.register("/sw.js", { scope: "/" });
     await navigator.serviceWorker.ready;
+    // On a first visit the worker is active but may not control this page yet
+    // (clients.claim() is still running). Some browsers (Safari) then send the
+    // tab's first navigations straight to the server. Wait for control.
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((resolve) => {
+        navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true });
+        setTimeout(resolve, 4000);
+      });
+    }
 
     const wispUrl = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/wisp/";
     // libcurl-transport 1.5.x creates its HTTP session in init() before the
