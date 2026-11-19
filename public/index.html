@@ -8,10 +8,16 @@
   <script>
     // The mini-browser must never render inside one of its own tabs (that
     // happens if a tab's page skips the service worker and gets the app back).
-    if (window.self !== window.top) {
-      window.stop();
-      location.replace("/engine-wait.html");
-    }
+    // Only the app's own tabs count: embedding the whole app in another frame
+    // (e.g. an about:blank wrapper) is fine.
+    (function () {
+      var inOwnTab = false;
+      try { inOwnTab = window.parent !== window && !!window.parent.Engine; } catch (e) {}
+      if (inOwnTab) {
+        window.stop();
+        location.replace("/engine-wait.html");
+      }
+    })();
   </script>
   <link rel="stylesheet" href="/browser.css">
   <script src="/scram/scramjet.all.js?v=2"></script>
