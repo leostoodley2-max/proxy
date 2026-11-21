@@ -4,6 +4,26 @@ importScripts("/scram/scramjet.all.js?v=2");
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
 
+// Retry requests that fail in transit (dropped tunnel, connection reset, TLS
+// hiccup on the way out through WARP) instead of showing Scramjet's error
+// page. Only for requests that are safe to repeat: GET/HEAD without a body.
+// HTTP error statuses from the site are real answers and are not retried.
+const RETRY_DELAYS = [250, 1000];
+const clientFetch = scramjet.client.fetch.bind(scramjet.client);
+scramjet.client.fetch = async (url, init = {}) => {
+  const method = String(init.method || "GET").toUpperCase();
+  const repeatable = (method === "GET" || method === "HEAD") && init.body == null;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await clientFetch(url, init);
+    } catch (error) {
+      if (!repeatable || attempt >= RETRY_DELAYS.length || (init.signal && init.signal.aborted)) throw error;
+      console.warn("[orbit] retrying " + url + " after: " + (error && error.message));
+      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt]));
+    }
+  }
+};
+
 // Scramjet holds a response until the page acknowledges a cookie message
 // (see scripts/patch-scramjet.js). Never let a missing reply stall a page:
 // the worker has already stored the cookie, so stop waiting after a moment.
@@ -26,12 +46,16 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 
 // --- Asset cache ------------------------------------------------------------
 // Proxied requests bypass the browser's HTTP cache, so without this every
-// script, stylesheet, font and image is downloaded through the tunnel and
-// rewritten again on every page load. Cache the finished (rewritten) response
-// for as long as the site itself allows. Bump the version whenever Scramjet
-// or its settings change, since that changes the rewritten output.
+// script, stylesheet, font, image and game data file is downloaded through
+// the tunnel (and rewritten) again on every page load. Cache the finished
+// response for as long as the site itself allows, following the same rules
+// as the browser's own cache. Bump the version whenever Scramjet or its
+// settings change, since that changes the rewritten output.
 const ASSET_CACHE = "orbit-assets-v1";
-const CACHEABLE = new Set(["script", "style", "font", "image"]);
+// "" is fetch()/XMLHttpRequest: game engines (Unity, Godot...) load their
+// large .wasm/.data files that way.
+const CACHEABLE = new Set(["script", "style", "font", "image", "worker", "sharedworker", ""]);
+const MAX_BYTES = 200 * 1024 * 1024;
 const MIN_AGE = 60;                 // seconds; shorter-lived responses aren't worth it
 const MAX_AGE = 30 * 24 * 3600;     // seconds
 const MAX_ENTRIES = 3000;
@@ -46,7 +70,12 @@ scramjet.addEventListener("handleResponse", (event) => {
     const raw = {};
     const headers = event.rawResponse && event.rawResponse.rawHeaders;
     for (const key in headers || {}) raw[key.toLowerCase()] = String(headers[key]).toLowerCase();
-    if (raw["set-cookie"] || /\*|cookie/.test(raw.vary || "")) return;
+    if (raw["set-cookie"]) return;
+    // The cache key is just the URL, so only allow Vary on headers that are
+    // the same for every request from this browser.
+    const vary = (raw.vary || "").split(",").map((v) => v.trim()).filter(Boolean);
+    if (vary.some((v) => !["accept-encoding", "accept", "origin"].includes(v))) return;
+    if (Number(raw["content-length"]) > MAX_BYTES) return;
     const control = raw["cache-control"] || "";
     if (/no-store|no-cache/.test(control)) return;
     const match = /(?:^|,)\s*max-age\s*=\s*(\d+)/.exec(control);

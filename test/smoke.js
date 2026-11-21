@@ -88,11 +88,25 @@ const site = http.createServer((req, res) => {
     "/nostore.js": "no-store",
     "/short.js": "max-age=5",
   };
+  if (pathname === "/flaky" && hits[pathname] === 1) return req.socket.destroy(); // dropped connection
+  if (pathname === "/flaky") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end("<title>recovered</title>");
+  }
   if (pathname.startsWith("/page")) {
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-cache" });
     return res.end("<!doctype html><title>cache test</title>" +
       Object.keys(assets).map((src) => `<script src="${src}"></script>`).join("") +
-      "<script>addEventListener('load', () => { window.__done = window.__ran; })</script>");
+      "<script>addEventListener('load', async () => { await (await fetch('/game.data')).arrayBuffer(); " +
+      "await (await fetch('/api.json', { headers: { Authorization: 'Bearer x' } })).text(); window.__done = window.__ran; })</script>");
+  }
+  if (pathname === "/game.data") {
+    res.writeHead(200, { "Content-Type": "application/octet-stream", "Cache-Control": "public, max-age=86400" });
+    return res.end(Buffer.alloc(200000, 7));
+  }
+  if (pathname === "/api.json") { // per-user answer: must never be shared
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "private, max-age=3600", "Vary": "Authorization" });
+    return res.end("{}");
   }
   if (!assets[pathname]) return res.writeHead(404).end();
   const headers = { "Content-Type": "text/javascript", "Cache-Control": assets[pathname] };
@@ -116,7 +130,25 @@ async function loadTestPage(page, url) {
 }
 
 const tests = {
-  async "asset cache: reuses long-lived files, never cookie/no-store ones"(browser) {
+  async "dropped connection: retried instead of an error page"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/flaky";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await go(page, url);
+    const deadline = Date.now() + 20000;
+    let title;
+    while (Date.now() < deadline) {
+      const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+      title = frame && await frame.evaluate(() => document.title).catch(() => "");
+      if (title) break;
+      await page.waitForTimeout(100);
+    }
+    assert.equal(title, "recovered");
+    assert.equal(hits["/flaky"], 2, "should take exactly one retry");
+    await context.close();
+  },
+
+  async "asset cache: reuses long-lived files and game data, never cookie/no-store/per-user ones"(browser) {
     const siteUrl = "http://127.0.0.1:" + site.address().port;
     const context = await browser.newContext();
     let page = await openApp(context);
@@ -129,6 +161,8 @@ const tests = {
     assert.equal(hits["/cookie.js"], 2, "script that sets a cookie must not be cached");
     assert.equal(hits["/nostore.js"], 2, "no-store script must not be cached");
     assert.equal(hits["/short.js"], 2, "short-lived script must not be cached");
+    assert.equal(hits["/game.data"], 1, "long-lived game data (fetch) should come from the cache");
+    assert.equal(hits["/api.json"], 2, "response that varies per user must not be cached");
     await context.close();
   },
 

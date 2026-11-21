@@ -21,3 +21,4 @@ jobs:
       - run: npm install --no-save playwright
       - run: npx playwright install --with-deps chromium
       - run: npm test
+      - run: npm run compat

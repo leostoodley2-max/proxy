@@ -104,6 +104,23 @@ app.get("/sw.js", (req, res) => {
 // UI files revalidate on every load (cheap 304s) so a new deploy shows up at once.
 app.use(express.static(path.join(__dirname, "public"), { maxAge: 0 }));
 
+// Public suffix list for Scramjet (see scripts/patch-scramjet.js), one rule
+// per line, from the `psl` package. Read as data, not executed.
+const publicSuffixList = (() => {
+  try {
+    const source = fs.readFileSync(path.join(path.dirname(require.resolve("psl")), "..", "data", "rules.js"), "utf8");
+    const rules = JSON.parse(source.replace(/^\s*export default\s*/, "").replace(/;\s*$/, ""));
+    return rules.filter((rule) => typeof rule === "string" && /^[!*]?[^\s/]+$/.test(rule)).join("\n");
+  } catch (error) {
+    console.warn("[psl] Public suffix list unavailable: " + error.message);
+    return null;
+  }
+})();
+app.get("/psl.dat", (req, res) => {
+  if (!publicSuffixList) return res.sendStatus(404);
+  res.set("Cache-Control", "public, max-age=86400").type("text").send(publicSuffixList);
+});
+
 // Render's health check.
 app.get("/healthz", (req, res) => res.type("text").send("ok"));
 app.get("/egress", (req, res) => res.set("Cache-Control", "no-store").json(getEgress()));
