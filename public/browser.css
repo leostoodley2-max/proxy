@@ -59,6 +59,8 @@ h1 svg { width: 1.16em; height: 1.16em; color: #ff7891; }
 .search button { width: 34px; height: 34px; color: #ffdce5; background: #66344c; border: 1px solid #93516a; border-radius: 10px; }
 .search button:hover { background: #843e59; }
 .launchpad section { margin-top: 31px; }
+.diagnostics-link { display: block; margin-top: 22px; text-align: center; color: #8f8ca0; font-size: 12px; text-decoration: none; }
+.diagnostics-link:hover, .diagnostics-link:focus-visible { color: #d8d6e4; text-decoration: underline; }
 .launchpad h2 { display: flex; align-items: center; gap: 12px; color: #b1aebe; font-size: 10px; font-weight: 650; text-transform: uppercase; letter-spacing: .17em; margin: 0 0 13px; }
 .launchpad h2::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 #shortcuts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }

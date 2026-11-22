@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>Orbit diagnostics</title>
+  <style>
+    html { background: #1a1a2e; color: #d8d6e4; font: 15px/1.5 system-ui, sans-serif; }
+    body { max-width: 760px; margin: 0 auto; padding: 28px 20px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    p { color: #a9a6b8; margin: 0 0 18px; }
+    a { color: #e5a3bf; }
+    ul { list-style: none; padding: 0; margin: 0 0 22px; }
+    li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 9px 0; border-bottom: 1px solid #2c2b45; }
+    li .detail { color: #a9a6b8; font-size: 13px; overflow-wrap: anywhere; }
+    .ok::before { content: "✓"; color: #7fd1a0; }
+    .warn::before { content: "!"; color: #f0c674; font-weight: 700; }
+    .bad::before { content: "✕"; color: #ff7b8a; }
+    .wait::before { content: "…"; color: #a9a6b8; }
+    textarea { width: 100%; box-sizing: border-box; height: 220px; background: #11111f; color: #d8d6e4; border: 1px solid #2c2b45; border-radius: 8px; padding: 10px; font: 12px/1.4 ui-monospace, monospace; }
+    button { margin: 10px 10px 0 0; padding: 8px 18px; border: 0; border-radius: 8px; background: #c97da0; color: #1a1a2e; font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: default; }
+  </style>
+  <script src="/scram/scramjet.all.js?v=2"></script>
+  <script src="/baremux/index.js"></script>
+  <script src="/engine.js"></script>
+  <script src="/diagnostics.js" defer></script>
+</head>
+<body>
+  <h1>Orbit diagnostics</h1>
+  <p>Checks the proxy from this browser: the server, its connection out through Cloudflare WARP, and whether
+    YouTube and game sites accept it. Takes up to a minute. <a href="/">Back to the browser</a></p>
+  <ul id="checks"></ul>
+  <h2 style="font-size:15px">Report</h2>
+  <p>Copy this and send it to whoever maintains the proxy. It lists the checks above and the proxy's
+    last failed requests (their addresses included), nothing else.</p>
+  <textarea id="report" readonly spellcheck="false">Running…</textarea>
+  <button id="copy" type="button" disabled>Copy report</button>
+  <button id="rerun" type="button" disabled>Run again</button>
+</body>
+</html>
