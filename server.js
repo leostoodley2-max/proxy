@@ -9,6 +9,7 @@
 //   2. route WebSocket upgrades on /wisp/ to the Wisp server.
 
 const http = require("node:http");
+const fs = require("node:fs");
 const path = require("node:path");
 const express = require("express");
 const compression = require("compression");
@@ -27,7 +28,8 @@ Object.assign(wisp.options, {
   allow_udp_streams: false,
   // Don't let proxied pages reach the server's own network.
   allow_private_ips: false,
-  allow_loopback_ips: false,
+  // Only the benchmark (test/bench.js) sets this, to proxy a local test site.
+  allow_loopback_ips: process.env.ORBIT_TEST_ALLOW_LOOPBACK === "1",
   dns_servers: ["1.1.1.1", "1.0.0.1"],
 });
 
@@ -45,9 +47,52 @@ app.use((req, res, next) => {
 const cacheLong = { maxAge: "7d", immutable: false };
 // Scramjet is patched at install time (scripts/patch-scramjet.js), so let
 // browsers revalidate it (cheap 304s) instead of keeping a stale copy for days.
-app.use("/scram/", express.static(scramjetPath, { maxAge: 0 }));
-app.use("/baremux/", express.static(baremuxPath, cacheLong));
-app.use("/libcurl/", express.static(libcurlPath, cacheLong));
+const engineDirs = [
+  ["/scram/", scramjetPath, { maxAge: 0 }],
+  ["/baremux/", baremuxPath, cacheLong],
+  ["/libcurl/", libcurlPath, cacheLong],
+];
+for (const [mount, dir, options] of engineDirs) {
+  app.use(mount, precompressed(mount, dir, options), express.static(dir, options));
+}
+
+// Serves the copies made by scripts/precompress.js (brotli or gzip) when the
+// browser accepts them and they are up to date; otherwise falls through to
+// express.static, which the compression middleware compresses on the fly.
+function precompressed(mount, dir, options) {
+  const root = path.join(__dirname, "precompressed", mount);
+  const encodings = [["br", ".br"], ["gzip", ".gz"]];
+  const available = new Map(); // "/name" -> { br: file, gzip: file }
+  let names = [];
+  try { names = fs.readdirSync(root); } catch {}
+  for (const name of names) {
+    const match = /^(.+)\.(br|gz)$/.exec(name);
+    if (!match) continue;
+    const original = path.join(dir, match[1]);
+    const copy = path.join(root, name);
+    try {
+      if (fs.statSync(copy).mtimeMs < fs.statSync(original).mtimeMs) continue; // stale
+    } catch { continue; }
+    const entry = available.get("/" + match[1]) || {};
+    entry[match[2] === "br" ? "br" : "gzip"] = copy;
+    available.set("/" + match[1], entry);
+  }
+  return (req, res, next) => {
+    const entry = (req.method === "GET" || req.method === "HEAD") && available.get(req.path);
+    if (!entry) return next();
+    res.vary("Accept-Encoding");
+    const encoding = req.acceptsEncodings(...encodings.map(([name]) => name).filter((name) => entry[name]));
+    if (!encoding) return next();
+    res.setHeader("Content-Encoding", encoding);
+    res.type(express.static.mime.lookup(req.path));
+    res.sendFile(entry[encoding], { maxAge: options.maxAge, lastModified: true }, (error) => {
+      if (error && !res.headersSent) {
+        res.removeHeader("Content-Encoding");
+        next();
+      }
+    });
+  };
+}
 
 // The service worker must never be cached, or updates get stuck.
 app.get("/sw.js", (req, res) => {
@@ -58,6 +103,23 @@ app.get("/sw.js", (req, res) => {
 
 // UI files revalidate on every load (cheap 304s) so a new deploy shows up at once.
 app.use(express.static(path.join(__dirname, "public"), { maxAge: 0 }));
+
+// Public suffix list for Scramjet (see scripts/patch-scramjet.js), one rule
+// per line, from the `psl` package. Read as data, not executed.
+const publicSuffixList = (() => {
+  try {
+    const source = fs.readFileSync(path.join(path.dirname(require.resolve("psl")), "..", "data", "rules.js"), "utf8");
+    const rules = JSON.parse(source.replace(/^\s*export default\s*/, "").replace(/;\s*$/, ""));
+    return rules.filter((rule) => typeof rule === "string" && /^[!*]?[^\s/]+$/.test(rule)).join("\n");
+  } catch (error) {
+    console.warn("[psl] Public suffix list unavailable: " + error.message);
+    return null;
+  }
+})();
+app.get("/psl.dat", (req, res) => {
+  if (!publicSuffixList) return res.sendStatus(404);
+  res.set("Cache-Control", "public, max-age=86400").type("text").send(publicSuffixList);
+});
 
 // Render's health check.
 app.get("/healthz", (req, res) => res.type("text").send("ok"));

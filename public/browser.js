@@ -196,7 +196,7 @@
   function createFrame(tab) {
     const engine = window.Engine.createFrame();
     const frame = engine.frame;
-    frame.allow = "fullscreen; autoplay; encrypted-media; picture-in-picture; clipboard-write";
+    frame.allow = "fullscreen; autoplay; encrypted-media; picture-in-picture; clipboard-write; gamepad; screen-wake-lock";
     frame.allowFullscreen = true;
     frame.title = "Web page";
     frame.id = "page-" + tab.id;

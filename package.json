@@ -8,7 +8,9 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test/smoke.js",
-    "postinstall": "node scripts/patch-scramjet.js && node scripts/install-wireproxy.js"
+    "bench": "node test/bench.js",
+    "compat": "node test/compat.js",
+    "postinstall": "node scripts/patch-scramjet.js && node scripts/patch-libcurl.js && node scripts/precompress.js && node scripts/install-wireproxy.js"
   },
   "dependencies": {
     "@mercuryworkshop/bare-mux": "^2.1.9",
@@ -17,6 +19,7 @@
     "@mercuryworkshop/wisp-js": "^0.4.1",
     "compression": "^1.8.2",
     "express": "^4.22.3",
-    "ipaddr.js": "^2.5.0"
+    "ipaddr.js": "^2.5.0",
+    "psl": "^1.15.0"
   }
 }

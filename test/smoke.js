@@ -12,6 +12,7 @@
 
 "use strict";
 
+const http = require("node:http");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const assert = require("node:assert/strict");
@@ -23,7 +24,7 @@ const TARGET = "https://example.com/";
 
 function startServer() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), WARP: "off" },
+    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1" },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve, reject) => {
@@ -76,7 +77,95 @@ async function go(page, url) {
   await page.press("#address", "Enter");
 }
 
+// A local site for the asset cache test. Counts requests per path.
+const hits = {};
+const site = http.createServer((req, res) => {
+  const { pathname } = new URL(req.url, "http://x");
+  hits[pathname] = (hits[pathname] || 0) + 1;
+  const assets = {
+    "/long.js": "public, max-age=31536000, immutable",
+    "/cookie.js": "public, max-age=31536000",
+    "/nostore.js": "no-store",
+    "/short.js": "max-age=5",
+  };
+  if (pathname === "/flaky" && hits[pathname] === 1) return req.socket.destroy(); // dropped connection
+  if (pathname === "/flaky") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    return res.end("<title>recovered</title>");
+  }
+  if (pathname.startsWith("/page")) {
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-cache" });
+    return res.end("<!doctype html><title>cache test</title>" +
+      Object.keys(assets).map((src) => `<script src="${src}"></script>`).join("") +
+      "<script>addEventListener('load', async () => { await (await fetch('/game.data')).arrayBuffer(); " +
+      "await (await fetch('/api.json', { headers: { Authorization: 'Bearer x' } })).text(); window.__done = window.__ran; })</script>");
+  }
+  if (pathname === "/game.data") {
+    res.writeHead(200, { "Content-Type": "application/octet-stream", "Cache-Control": "public, max-age=86400" });
+    return res.end(Buffer.alloc(200000, 7));
+  }
+  if (pathname === "/api.json") { // per-user answer: must never be shared
+    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "private, max-age=3600", "Vary": "Authorization" });
+    return res.end("{}");
+  }
+  if (!assets[pathname]) return res.writeHead(404).end();
+  const headers = { "Content-Type": "text/javascript", "Cache-Control": assets[pathname] };
+  if (pathname === "/cookie.js") headers["Set-Cookie"] = "seen=1; Path=/";
+  res.writeHead(200, headers);
+  res.end("window.__ran = (window.__ran || 0) + 1;");
+});
+
+async function loadTestPage(page, url) {
+  await go(page, url);
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const done = frame && await frame.evaluate(() => window.__done).catch(() => undefined);
+    if (done !== undefined) return assert.equal(done, 4, "all 4 scripts should run");
+    await page.waitForTimeout(50);
+  }
+  const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+  const state = frame && await frame.evaluate(() => [window.__ran, window.__done, document.documentElement.outerHTML.slice(0, 300)]).catch((e) => e.message);
+  throw new Error("test page never finished loading: " + url + " " + JSON.stringify({ state, hits, frames: page.frames().map((f) => f.url()) }));
+}
+
 const tests = {
+  async "dropped connection: retried instead of an error page"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/flaky";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await go(page, url);
+    const deadline = Date.now() + 20000;
+    let title;
+    while (Date.now() < deadline) {
+      const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+      title = frame && await frame.evaluate(() => document.title).catch(() => "");
+      if (title) break;
+      await page.waitForTimeout(100);
+    }
+    assert.equal(title, "recovered");
+    assert.equal(hits["/flaky"], 2, "should take exactly one retry");
+    await context.close();
+  },
+
+  async "asset cache: reuses long-lived files and game data, never cookie/no-store/per-user ones"(browser) {
+    const siteUrl = "http://127.0.0.1:" + site.address().port;
+    const context = await browser.newContext();
+    let page = await openApp(context);
+    await loadTestPage(page, siteUrl + "/page1");
+    // Reopen the app so the browser's in-memory cache can't help.
+    await page.close();
+    page = await openApp(context);
+    await loadTestPage(page, siteUrl + "/page2");
+    assert.equal(hits["/long.js"], 1, "long-lived script should come from the cache");
+    assert.equal(hits["/cookie.js"], 2, "script that sets a cookie must not be cached");
+    assert.equal(hits["/nostore.js"], 2, "no-store script must not be cached");
+    assert.equal(hits["/short.js"], 2, "short-lived script must not be cached");
+    assert.equal(hits["/game.data"], 1, "long-lived game data (fetch) should come from the cache");
+    assert.equal(hits["/api.json"], 2, "response that varies per user must not be cached");
+    await context.close();
+  },
+
   async "first visit: tab loads through the proxy"(browser) {
     const context = await browser.newContext();
     const page = await openApp(context);
@@ -148,6 +237,7 @@ const tests = {
 
 (async () => {
   const server = await startServer();
+  await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
   const browser = await chromium.launch();
   let failed = 0;
   try {
@@ -163,6 +253,7 @@ const tests = {
   } finally {
     await browser.close();
     server.kill();
+    site.close();
   }
   if (failed) {
     console.log(failed + " failed");
