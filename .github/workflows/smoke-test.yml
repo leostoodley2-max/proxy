@@ -18,6 +18,11 @@ jobs:
           node-version-file: .node-version
           cache: npm
       - run: npm ci
+      # Patches must be safe to re-run (Render may keep node_modules between builds).
+      - name: Re-run install patches and check the engine still parses
+        run: |
+          npm run postinstall
+          node -e 'new Function(require("fs").readFileSync("node_modules/@mercuryworkshop/scramjet/dist/scramjet.all.js", "utf8"))'
       - run: npm install --no-save playwright
       - run: npx playwright install --with-deps chromium
       - run: npm test

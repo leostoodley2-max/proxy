@@ -18,7 +18,7 @@
   <script>
     // Shown inside a mini-browser tab when a page there didn't go through the
     // service worker: the server sends it for stray /scramjet/ requests, and
-    // index.html redirects here if the app loads inside one of its own tabs.
+    // browser.html redirects here if the app loads inside one of its own tabs.
     //
     // Recovery escalates, each step rate-limited so it can never loop:
     //   1. reload this tab (the worker may just not have been ready yet),
@@ -41,7 +41,7 @@
         if (window.parent !== window && window.parent.Engine) app = window.parent;
       } catch (e) {}
       if (!app) {
-        location.replace("/");
+        location.replace("/app");
         return;
       }
 

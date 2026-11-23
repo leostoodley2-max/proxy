@@ -143,6 +143,16 @@ const tests = {
     x.send();
   }),
   "fullscreen allowed": async () => eq(document.fullscreenEnabled, true, "fullscreenEnabled"),
+  "game frame sees the real embedding site (sitelock)": () => new Promise((ok, no) => {
+    const f = document.createElement("iframe");
+    f.src = OTHER + "/sitelock";
+    addEventListener("message", function on(e) {
+      if (typeof e.data !== "string" || !e.data.startsWith("sitelock:")) return;
+      removeEventListener("message", on);
+      try { ok(eq(e.data, "sitelock:" + location.origin + "|" + location.origin + "/", "ancestorOrigins|referrer")); } catch (err) { no(err); }
+    });
+    document.body.append(f);
+  }),
   "CORS fetch with credentials": async () => {
     const r = await fetch(OTHER + "/cors", { credentials: "include" });
     return eq(await r.text(), "cors-ok", "cors");
@@ -257,6 +267,7 @@ function site(otherOrigin) {
       const body = Buffer.concat(chunks);
       switch (url.pathname) {
         case "/page": return send(200, { "Content-Type": "text/html" }, PAGE(otherOrigin));
+        case "/sitelock": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('sitelock:' + (location.ancestorOrigins ? location.ancestorOrigins[0] : 'none') + '|' + document.referrer.replace(/page$/, ''), '*')</script>");
         case "/threads": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('threads:' + crossOriginIsolated + ':' + typeof SharedArrayBuffer, '*')</script>");
         case "/child": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('child-ready', '*')</script>");
         case "/echo": return send(200, { "Content-Type": req.headers["content-type"] || "application/octet-stream" }, body);
@@ -312,13 +323,27 @@ async function results(frameOrPage) {
   throw new Error("test page never finished: " + JSON.stringify(progress));
 }
 
+
+// The proxy browser (/app) is behind the front page's sign-in; start signed in.
+function signedIn(browser) {
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (options) => {
+    const context = await newContext(options);
+    await context.addInitScript(() => {
+      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
+    });
+    return context;
+  };
+  return browser;
+}
+
 (async () => {
   const wss = await wsServer();
   const other = await site("");
   const main = await site("http://127.0.0.1:" + other.address().port);
   const pageUrl = "http://127.0.0.1:" + main.address().port + "/page";
   const proxy = await startProxy();
-  const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] });
+  const browser = signedIn(await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }));
   let regressions = 0;
   try {
     // Direct (control): served cross-origin isolated like the proxy would be.
@@ -333,7 +358,7 @@ async function results(frameOrPage) {
     const page = await (await browser.newContext()).newPage();
     page.on("console", (m) => { if (m.type() === "error") console.log("[page error]", m.text().slice(0, 300)); });
     page.on("pageerror", (e) => console.log("[page exception]", e.message.slice(0, 300)));
-    await page.goto("http://localhost:" + PROXY_PORT + "/");
+    await page.goto("http://localhost:" + PROXY_PORT + "/app");
     await page.waitForFunction(() => window.Engine && navigator.serviceWorker.controller);
     await page.fill("#address", pageUrl);
     await page.press("#address", "Enter");
