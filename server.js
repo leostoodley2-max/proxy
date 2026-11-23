@@ -134,7 +134,13 @@ app.use("/scramjet/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "engine-wait.html"));
 });
 
-// Any other unknown path loads the app instead of a bare 404.
+// The proxy browser itself (the front page at / signs in to it).
+app.get("/app", (req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
+  res.sendFile(path.join(__dirname, "public", "browser.html"));
+});
+
+// Any other unknown path loads the front page instead of a bare 404.
 app.use((req, res) => {
   res.status(404).sendFile(path.join(__dirname, "public", "index.html"));
 });

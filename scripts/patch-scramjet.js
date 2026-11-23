@@ -43,6 +43,16 @@
 // 7. IndexedDB: Scramjet opens a new database connection for every cookie
 //    and referrer lookup, several per request. Fix: reuse one connection per
 //    database (reopened if the browser closes it).
+//
+// 8. document.referrer: Scramjet returns the page's own URL. Game sitelocks
+//    (and analytics, and some logins) check the referrer to see which site
+//    embeds them, so games refused to start. Fix: decode the real (proxied)
+//    referrer and apply the browser's default policy (full URL same-origin,
+//    origin only cross-origin, nothing from https to http).
+//
+// 9. location.ancestorOrigins was missing from Scramjet's location object;
+//    sitelocks read it too. Fix: list the real origins of the proxied
+//    parent frames, like the browser does.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -163,6 +173,34 @@ const patches = [
       `return db}function __orbitOpenDb${rest}`,
     fixed: /const __orbitDbs=new Map\(\);function \w+\(name,version,options\)/,
   },
+  {
+    name: "document.referrer",
+    files: ["scramjet.all.js"],
+    impact: "game sitelocks see the wrong referrer",
+    // e.Trap("Document.prototype.referrer",{get:()=>e.url.toString()})
+    buggy: /(\w+)\.Trap\("Document\.prototype\.referrer",\{get:\(\)=>\1\.url\.toString\(\)\}\)/g,
+    replace: (_, c) => `${c}.Trap("Document.prototype.referrer",{get:ctx=>{` +
+      `let raw;try{raw=ctx.get()}catch(x){return""}if(!raw)return"";` +
+      `let from;try{let p=new URL(raw);if(!p.pathname.startsWith("/scramjet/"))return"";` +
+      `from=new URL(decodeURIComponent(p.pathname.slice(10)))}catch(x){return""}` +
+      `let here=${c}.url;if(from.protocol==="https:"&&here.protocol==="http:")return"";` +
+      `return from.origin===here.origin?from.href:from.origin+"/"}})`,
+    fixed: /Trap\("Document\.prototype\.referrer",\{get:ctx=>\{/,
+  },
+  {
+    name: "location.ancestorOrigins",
+    files: ["scramjet.all.js"],
+    impact: "game sitelocks can't see the embedding site",
+    // function s(e,t){let r=a.iswindow?t.Location:t.WorkerLocation,s={};Object.setPrototypeOf(s,r.prototype),s.constructor=r;
+    buggy: /(function \w+\(\w+,(\w+)\)\{let (\w+)=(\w+)\.iswindow\?\2\.Location:\2\.WorkerLocation,(\w+)=\{\};Object\.setPrototypeOf\(\5,\3\.prototype\),\5\.constructor=\3;)/g,
+    replace: (_, head, win, _loc, env, obj) => head +
+      `${env}.iswindow&&Object.defineProperty(${obj},"ancestorOrigins",{enumerable:!0,configurable:!1,get(){` +
+      `let list=[],w=${win};try{for(;w.parent!==w;){w=w.parent;let c=w[Symbol.for("scramjet client global")];` +
+      `if(!c)break;list.push(c.url.origin)}}catch(x){}` +
+      `let out={length:list.length,item:i=>list[i]??null,contains:v=>list.includes(v),[Symbol.iterator]:()=>list[Symbol.iterator]()};` +
+      `list.forEach((v,i)=>{out[i]=v});return out}});`,
+    fixed: /\.iswindow&&Object\.defineProperty\(\w+,"ancestorOrigins"/,
+  },
 ];
 
 const sources = {};
@@ -179,13 +217,17 @@ for (const patch of patches) {
     }
     const code = sources[name];
     if (code === null) continue;
+    // Check "already patched" first: a patched file can still match `buggy`
+    // (e.g. the renamed original function), and patching twice breaks it.
+    if (patch.fixed.test(code)) {
+      console.log("[patch-scramjet] " + patch.name + " already patched in " + name);
+      continue;
+    }
     const matches = code.match(patch.buggy) || [];
     if (matches.length === 1) {
       sources[name] = code.replace(patch.buggy, patch.replace);
       fs.writeFileSync(file, sources[name]);
       console.log("[patch-scramjet] Patched " + patch.name + " in " + name);
-    } else if (matches.length === 0 && patch.fixed.test(code)) {
-      console.log("[patch-scramjet] " + patch.name + " already patched in " + name);
     } else {
       console.warn("[patch-scramjet] Unexpected code in " + name + " (" + matches.length +
         " matches for " + patch.name + "); left unchanged. " + patch.impact[0].toUpperCase() +

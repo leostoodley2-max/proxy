@@ -66,7 +66,7 @@ async function expectProxiedTab(page, label) {
 
 async function openApp(context) {
   const page = await context.newPage();
-  await page.goto(BASE + "/");
+  await page.goto(BASE + "/app");
   await page.waitForFunction(() => window.Engine && navigator.serviceWorker.controller, null, { timeout: 20000 });
   return page;
 }
@@ -88,6 +88,10 @@ const site = http.createServer((req, res) => {
     "/nostore.js": "no-store",
     "/short.js": "max-age=5",
   };
+  if (pathname === "/whoami") { // shows the Cookie header the site received
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end("<title>" + (req.headers.cookie || "no cookies").replace(/[<>&]/g, "") + "</title>");
+  }
   if (pathname === "/flaky" && hits[pathname] === 1) return req.socket.destroy(); // dropped connection
   if (pathname === "/flaky") {
     res.writeHead(200, { "Content-Type": "text/html" });
@@ -129,7 +133,71 @@ async function loadTestPage(page, url) {
   throw new Error("test page never finished loading: " + url + " " + JSON.stringify({ state, hits, frames: page.frames().map((f) => f.url()) }));
 }
 
+async function frameTitle(page, url) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const title = frame && await frame.evaluate(() => document.title).catch(() => "");
+    if (title) return title;
+    await page.waitForTimeout(100);
+  }
+  return "";
+}
+
 const tests = {
+  async "front page: revision app, only the special sign-in opens the browser"(browser) {
+    const context = await browser.newSignedOutContext();
+    const page = await context.newPage();
+    await page.goto(BASE + "/app");
+    await page.waitForURL(BASE + "/");
+    assert.match(await page.title(), /Recall/, "/app without signing in shows the revision app");
+    // A normal account works and stays in the revision app.
+    await page.click("#open-signup");
+    await page.fill("#auth-user", "student1");
+    await page.fill("#auth-pass", "revision1");
+    await page.click("#auth-submit");
+    await page.waitForSelector("#who:not([hidden])");
+    await page.click(".deck");
+    await page.click("#study");
+    await page.click("#flashcard");
+    assert.equal(await page.textContent("#card-side"), "Answer");
+    await page.click("#stop-study");
+    await page.click("#back");
+    await page.click("#signout");
+    // Wrong password for the special account: stays put.
+    await page.click("#open-signin");
+    await page.fill("#auth-user", "proxy");
+    await page.fill("#auth-pass", "1234");
+    await page.click("#auth-submit");
+    await page.waitForSelector("#auth-error:not([hidden])");
+    assert.equal(new URL(page.url()).pathname, "/");
+    // The special sign-in opens the browser.
+    await page.fill("#auth-user", "proxy");
+    await page.fill("#auth-pass", "12345");
+    await page.click("#auth-submit");
+    await page.waitForURL(BASE + "/app");
+    await page.waitForSelector("#address");
+    await context.close();
+  },
+
+  async "bring in a sign-in: imported cookies reach the site"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/whoami";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await page.click("#open-import");
+    await page.fill("#import-text", JSON.stringify([
+      { domain: "127.0.0.1", hostOnly: true, name: "session", value: "abc123", path: "/", httpOnly: true, secure: false },
+      { domain: "127.0.0.1", hostOnly: true, name: "old", value: "x", path: "/", expirationDate: 1 },
+    ]));
+    await page.click("#import-form .primary");
+    await page.waitForSelector("#import-result:not([hidden])");
+    assert.match(await page.textContent("#import-result"), /Imported 1 cookie .*1 expired/);
+    await page.keyboard.press("Escape");
+    await go(page, url);
+    assert.equal(await frameTitle(page, url), "session=abc123");
+    await context.close();
+  },
+
   async "dropped connection: retried instead of an error page"(browser) {
     const url = "http://127.0.0.1:" + site.address().port + "/flaky";
     const context = await browser.newContext();
@@ -224,7 +292,7 @@ const tests = {
     await page.goto(BASE + "/healthz");
     await page.evaluate(() => {
       const frame = document.createElement("iframe");
-      frame.src = "/";
+      frame.src = "/app";
       document.body.append(frame);
     });
     await page.waitForFunction(() => {
@@ -235,10 +303,25 @@ const tests = {
   },
 };
 
+
+// The proxy browser (/app) is behind the front page's sign-in; start signed in.
+function signedIn(browser) {
+  const newContext = browser.newContext.bind(browser);
+  browser.newSignedOutContext = newContext;
+  browser.newContext = async (options) => {
+    const context = await newContext(options);
+    await context.addInitScript(() => {
+      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
+    });
+    return context;
+  };
+  return browser;
+}
+
 (async () => {
   const server = await startServer();
   await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
-  const browser = await chromium.launch();
+  const browser = signedIn(await chromium.launch());
   let failed = 0;
   try {
     for (const [name, run] of Object.entries(tests)) {

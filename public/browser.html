@@ -1,0 +1,137 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a2e">
+  <title>New Tab</title>
+  <script>
+    // The mini-browser must never render inside one of its own tabs (that
+    // happens if a tab's page skips the service worker and gets the app back).
+    // Only the app's own tabs count: embedding the whole app in another frame
+    // (e.g. an about:blank wrapper) is fine.
+    (function () {
+      // Only reachable after signing in on the front page (index.html).
+      try {
+        if (localStorage.getItem("orbit.unlocked") !== "1") {
+          window.stop();
+          location.replace("/");
+          return;
+        }
+      } catch (e) {}
+      var inOwnTab = false;
+      try { inOwnTab = window.parent !== window && !!window.parent.Engine; } catch (e) {}
+      if (inOwnTab) {
+        window.stop();
+        location.replace("/engine-wait.html");
+      }
+    })();
+  </script>
+  <link rel="stylesheet" href="/browser.css">
+  <script src="/scram/scramjet.all.js?v=2"></script>
+  <script src="/baremux/index.js"></script>
+  <script src="/engine.js"></script>
+  <script src="/browser.js" defer></script>
+  <script src="/signin-import.js" defer></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m13 5-7 7 7 7M6 12h14"/></symbol>
+    <symbol id="i-forward" viewBox="0 0 24 24"><path d="m11 5 7 7-7 7M18 12H4"/></symbol>
+    <symbol id="i-reload" viewBox="0 0 24 24"><path d="M20 5v6h-6M19.6 10a8 8 0 1 0-.9 7"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8M5 10v10h5v-6h4v6h5V10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-enter" viewBox="0 0 24 24"><path d="M19 5v9H5m5-5-5 5 5 5"/></symbol>
+    <symbol id="i-orbit" viewBox="0 0 72 72">
+      <g transform="rotate(-32 36 36)">
+        <circle cx="36" cy="36" r="20" fill="currentColor"/>
+        <path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="var(--planet-shadow, #1a1a2e)" stroke-width="7"/>
+        <path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="currentColor" stroke-width="3"/>
+      </g>
+    </symbol>
+    <symbol id="brand-google" viewBox="0 0 24 24">
+      <path fill="#4285f4" d="M21.8 12.2c0-.7-.1-1.4-.2-2.1H12v4h5.5a4.8 4.8 0 0 1-2 3.1v2.6h3.3c1.9-1.8 3-4.4 3-7.6Z"/>
+      <path fill="#34a853" d="M12 22c2.7 0 5-.9 6.8-2.5l-3.3-2.6c-.9.6-2 1-3.5 1-2.6 0-4.7-1.7-5.5-4H3.1v2.7A10 10 0 0 0 12 22Z"/>
+      <path fill="#fbbc05" d="M6.5 13.9a6 6 0 0 1 0-3.8V7.4H3.1a10 10 0 0 0 0 9.2Z"/>
+      <path fill="#ea4335" d="M12 6.1c1.5 0 2.8.5 3.8 1.5l2.9-2.9A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.9 5.4l3.4 2.7c.8-2.3 2.9-4 5.5-4Z"/>
+    </symbol>
+    <symbol id="brand-youtube" viewBox="0 0 24 24"><rect x="1" y="4.4" width="22" height="15.2" rx="4.4" fill="#ff3347"/><path fill="white" d="m10 8.4 6 3.6-6 3.6z"/></symbol>
+    <symbol id="brand-reddit" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="#ff571a"/><g fill="white"><circle cx="4.9" cy="11.8" r="2"/><circle cx="19.1" cy="11.8" r="2"/><circle cx="17.2" cy="5.9" r="1.6"/><ellipse cx="12" cy="13.4" rx="7.6" ry="5.1"/></g><path d="m12.3 9 1-4 3.3.8" fill="none" stroke="white" stroke-width="1.1"/><g fill="#ff571a"><circle cx="9" cy="12.7" r="1.1"/><circle cx="15" cy="12.7" r="1.1"/></g><path d="M8.8 15.6q3.2 2.2 6.4 0" fill="none" stroke="#ff571a" stroke-linecap="round"/></symbol>
+  </svg>
+  <header>
+    <div class="tab-row">
+      <svg class="app-mark" aria-label="Orbit" role="img"><use href="#i-orbit"/></svg>
+      <div id="tabs" role="tablist" aria-label="Browser tabs"></div>
+      <button id="new-tab" class="tool" title="New tab (Ctrl+T)" aria-label="New tab"><svg class="icon"><use href="#i-plus"/></svg></button>
+    </div>
+    <div class="toolbar" aria-label="Browser controls">
+      <button class="tool" data-command="back" title="Back (Alt+Left)" aria-label="Back"><svg class="icon"><use href="#i-back"/></svg></button>
+      <button class="tool" data-command="forward" title="Forward (Alt+Right)" aria-label="Forward"><svg class="icon"><use href="#i-forward"/></svg></button>
+      <button class="tool" data-command="reload" title="Reload (Ctrl+R)" aria-label="Reload"><svg class="icon"><use href="#i-reload"/></svg></button>
+      <button class="tool" data-command="home" title="Home" aria-label="Home"><svg class="icon"><use href="#i-home"/></svg></button>
+      <form id="address-form" class="address" aria-label="Address bar">
+        <svg class="icon"><use href="#i-globe"/></svg>
+        <input id="address" aria-label="Address" placeholder="Search or enter a URL" autocomplete="off" spellcheck="false">
+      </form>
+    </div>
+  </header>
+  <div id="banner" role="alert" hidden></div>
+  <main id="pages">
+    <div id="home" role="tabpanel" aria-label="New Tab">
+      <canvas id="sky" aria-hidden="true"></canvas>
+      <div class="launchpad">
+        <h1><svg aria-hidden="true"><use href="#i-orbit"/></svg>Orbit</h1>
+        <form id="search-form" class="search" role="search">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <input id="search" aria-label="Search the web or enter a URL" placeholder="Search the web or enter a URL" autocomplete="off" spellcheck="false" autofocus>
+          <button type="submit" title="Go" aria-label="Go"><svg class="icon"><use href="#i-enter"/></svg></button>
+        </form>
+        <section aria-labelledby="shortcuts-title">
+          <h2 id="shortcuts-title">Shortcuts</h2>
+          <div id="shortcuts"></div>
+        </section>
+        <div class="launch-links">
+          <button id="open-import" class="link-button" type="button">Can't sign in? Bring in a sign-in from your normal browser</button>
+          <a class="diagnostics-link" href="/diagnostics.html" target="_blank" rel="noopener">Something not loading? Run diagnostics</a>
+        </div>
+      </div>
+    </div>
+  </main>
+  <dialog id="import-dialog" class="import-dialog" aria-labelledby="import-heading">
+    <form id="import-form">
+      <h2 id="import-heading">Bring in a sign-in</h2>
+      <ol>
+        <li>In your normal browser (not here), sign in to the site.</li>
+        <li>With a cookie export extension such as <b>Cookie-Editor</b>, open the extension on that site and choose
+          <b>Export → JSON</b> (a <code>cookies.txt</code> file works too).</li>
+        <li>Paste it below and press <b>Import</b>, then reload the site's tab here.</li>
+      </ol>
+      <p class="warning">Cookies are your signed-in session: anyone who has them is signed in as you. Only paste
+        your own, here on your own device, and never send them to anyone.</p>
+      <textarea id="import-text" rows="7" spellcheck="false" required placeholder='[{"domain": ".example.com", "name": "session", "value": "…"}]' aria-label="Exported cookies"></textarea>
+      <p id="import-result" role="status" hidden></p>
+      <div class="dialog-actions"><button type="button" id="cancel-import">Close</button><button class="primary">Import</button></div>
+    </form>
+  </dialog>
+  <dialog id="pin-dialog" aria-labelledby="pin-heading">
+    <form id="pin-form">
+      <h2 id="pin-heading">Add shortcut</h2>
+      <label>Name<input id="pin-name" required maxlength="80" autocomplete="off"></label>
+      <label>URL<input id="pin-url" required placeholder="example.com" autocomplete="off" spellcheck="false"></label>
+      <div class="dialog-actions"><button type="button" id="cancel-pin">Cancel</button><button class="primary">Add shortcut</button></div>
+    </form>
+  </dialog>
+  <template id="tab-template">
+    <div class="tab">
+      <button class="tab-select" role="tab">
+        <span class="tab-icon"><svg class="icon"><use href="#i-globe"/></svg><img alt="" hidden></span>
+        <span class="tab-title"></span>
+      </button>
+      <button class="close-tab" aria-label="Close tab" title="Close tab"><svg class="icon"><use href="#i-close"/></svg></button>
+    </div>
+  </template>
+</body>
+</html>

@@ -81,15 +81,29 @@ async function timeLoad(page, url) {
   }
 }
 
+
+// The proxy browser (/app) is behind the front page's sign-in; start signed in.
+function signedIn(browser) {
+  const newContext = browser.newContext.bind(browser);
+  browser.newContext = async (options) => {
+    const context = await newContext(options);
+    await context.addInitScript(() => {
+      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
+    });
+    return context;
+  };
+  return browser;
+}
+
 (async () => {
   const site = await startSite();
   const proxy = await startProxy();
   const base = "http://127.0.0.1:" + site.address().port;
-  const browser = await chromium.launch();
+  const browser = signedIn(await chromium.launch());
   try {
     const context = await browser.newContext();
     let page = await context.newPage();
-    await page.goto("http://localhost:" + PROXY_PORT + "/");
+    await page.goto("http://localhost:" + PROXY_PORT + "/app");
     await page.waitForFunction(() => window.Engine && navigator.serviceWorker.controller);
     await page.evaluate(() => window.Engine.ready);
     const results = {};
@@ -98,7 +112,7 @@ async function timeLoad(page, url) {
     // Reopen the app: the service worker restarts, but its caches remain.
     await page.close();
     page = await context.newPage();
-    await page.goto("http://localhost:" + PROXY_PORT + "/");
+    await page.goto("http://localhost:" + PROXY_PORT + "/app");
     await page.waitForFunction(() => window.Engine && navigator.serviceWorker.controller);
     await page.evaluate(() => window.Engine.ready);
     results["after reopening the app"] = await timeLoad(page, base + "/page3");

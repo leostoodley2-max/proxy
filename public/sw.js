@@ -4,6 +4,53 @@ importScripts("/scram/scramjet.all.js?v=2");
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
 
+// --- Recent failures, for /diagnostics.html ---------------------------------
+// Kept in Cache Storage too, because the browser stops idle service workers
+// after ~30 s and the user runs diagnostics after something went wrong.
+const ERROR_LOG = "/__orbit/errors.json";
+let recentErrors = null;
+async function loadErrors() {
+  if (recentErrors) return recentErrors;
+  try {
+    const saved = await (await caches.open("orbit-diagnostics")).match(ERROR_LOG);
+    recentErrors = saved ? await saved.json() : [];
+  } catch (e) {
+    recentErrors = [];
+  }
+  return recentErrors;
+}
+async function logError(entry) {
+  const list = await loadErrors();
+  list.push({ time: new Date().toISOString(), ...entry });
+  while (list.length > 30) list.shift();
+  try {
+    await (await caches.open("orbit-diagnostics")).put(ERROR_LOG, new Response(JSON.stringify(list)));
+  } catch (e) {}
+}
+function realUrl(proxied) {
+  try {
+    const url = new URL(proxied);
+    return url.pathname.startsWith("/scramjet/") ? decodeURIComponent(url.pathname.slice(10)) : proxied;
+  } catch (e) {
+    return String(proxied);
+  }
+}
+// Scramjet reports failed requests with console.error("ERROR FROM SERVICE WORKER FETCH: ", details).
+const consoleError = console.error.bind(console);
+console.error = (...args) => {
+  try {
+    if (typeof args[0] === "string" && args[0].startsWith("ERROR FROM SERVICE WORKER FETCH") && args[1]) {
+      const details = args[1];
+      logError({ url: realUrl(details.url), type: details.destination || "fetch", error: String(details.message).slice(0, 300) });
+    }
+  } catch (e) {}
+  consoleError(...args);
+};
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "orbit-diagnostics") return;
+  event.waitUntil(loadErrors().then((errors) => event.source && event.source.postMessage({ type: "orbit-diagnostics", errors })));
+});
+
 // Retry requests that fail in transit (dropped tunnel, connection reset, TLS
 // hiccup on the way out through WARP) instead of showing Scramjet's error
 // page. Only for requests that are safe to repeat: GET/HEAD without a body.
@@ -19,6 +66,7 @@ scramjet.client.fetch = async (url, init = {}) => {
     } catch (error) {
       if (!repeatable || attempt >= RETRY_DELAYS.length || (init.signal && init.signal.aborted)) throw error;
       console.warn("[orbit] retrying " + url + " after: " + (error && error.message));
+      logError({ url: String(url), type: "retried", error: String(error && error.message).slice(0, 300) });
       await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt]));
     }
   }
