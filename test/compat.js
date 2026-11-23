@@ -15,6 +15,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
+const codec = require("../public/codec.js");
 
 const PROXY_PORT = 19500 + Math.floor(Math.random() * 400);
 const VIDEO = fs.readFileSync(path.join(__dirname, "fixtures", "clip.webm"));   // VP9, 6 s, no audio
@@ -363,7 +364,7 @@ function signedIn(browser) {
     await page.fill("#address", pageUrl);
     await page.press("#address", "Enter");
     let frame;
-    while (!(frame = page.frames().find((f) => f.url().includes(encodeURIComponent(pageUrl))))) await page.waitForTimeout(100);
+    while (!(frame = page.frames().find((f) => f.url().includes(codec.encode(pageUrl))))) await page.waitForTimeout(100);
     const got = await results(frame);
 
     for (const name of Object.keys(want)) {

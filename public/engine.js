@@ -14,8 +14,10 @@
   const TRANSPORT = "/libcurl/index.mjs";
 
   const { ScramjetController } = $scramjetLoadController();
+  // Proxied pages get disguised addresses (/study/<topic>-<topic>-...), see codec.js.
   const scramjet = new ScramjetController({
-    prefix: "/scramjet/",
+    prefix: OrbitCodec.prefix,
+    codec: { encode: OrbitCodec.encode, decode: OrbitCodec.decode },
     files: {
       wasm: "/scram/scramjet.wasm.wasm",
       all: "/scram/scramjet.all.js?v=2",
@@ -169,7 +171,7 @@
       if (!raw || /^(javascript|mailto|tel|blob|data):/i.test(raw)) return null;
       try {
         const u = new URL(raw, location.href);
-        if (u.origin === location.origin && u.pathname.startsWith("/scramjet/")) return scramjet.decodeUrl(u.href);
+        if (u.origin === location.origin && u.pathname.startsWith(OrbitCodec.prefix)) return scramjet.decodeUrl(u.href);
         if (u.protocol === "http:" || u.protocol === "https:") return u.href;
       } catch (e) {}
       return null;

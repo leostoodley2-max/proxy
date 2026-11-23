@@ -47,8 +47,9 @@
 // 8. document.referrer: Scramjet returns the page's own URL. Game sitelocks
 //    (and analytics, and some logins) check the referrer to see which site
 //    embeds them, so games refused to start. Fix: decode the real (proxied)
-//    referrer and apply the browser's default policy (full URL same-origin,
-//    origin only cross-origin, nothing from https to http).
+//    referrer with the configured prefix and codec (public/codec.js) and apply
+//    the browser's default policy (full URL same-origin, origin only
+//    cross-origin, nothing from https to http).
 //
 // 9. location.ancestorOrigins was missing from Scramjet's location object;
 //    sitelocks read it too. Fix: list the real origins of the proxied
@@ -177,15 +178,19 @@ const patches = [
     name: "document.referrer",
     files: ["scramjet.all.js"],
     impact: "game sitelocks see the wrong referrer",
-    // e.Trap("Document.prototype.referrer",{get:()=>e.url.toString()})
-    buggy: /(\w+)\.Trap\("Document\.prototype\.referrer",\{get:\(\)=>\1\.url\.toString\(\)\}\)/g,
-    replace: (_, c) => `${c}.Trap("Document.prototype.referrer",{get:ctx=>{` +
+    // Module header `{default:()=>i});var n=r(884);function i(e,t){let r=String;e.Proxy(["Document.prototype.querySelector"`
+    // gains access to Scramjet's config (module 37: prefix and codec), then the trap
+    // e.Trap("Document.prototype.referrer",{get:()=>e.url.toString()}) (or this patch's
+    // earlier /scramjet/-only version) is replaced.
+    buggy: /(\{default:\(\)=>(\w+)\}\);var \w+=r\(884\);)(function \2\(e,t\)\{let r=String;e\.Proxy\(\["Document\.prototype\.querySelector"[^]*?)(\w+)\.Trap\("Document\.prototype\.referrer",\{get:(?:\(\)=>\4\.url\.toString\(\)|ctx=>\{let raw;[^]*?from\.origin\+"\/"\})\}\)/g,
+    replace: (_, header, _name, body, c) => header + "var __orbitCfg=r(37);" + body +
+      `${c}.Trap("Document.prototype.referrer",{get:ctx=>{` +
       `let raw;try{raw=ctx.get()}catch(x){return""}if(!raw)return"";` +
-      `let from;try{let p=new URL(raw);if(!p.pathname.startsWith("/scramjet/"))return"";` +
-      `from=new URL(decodeURIComponent(p.pathname.slice(10)))}catch(x){return""}` +
+      `let from;try{let p=new URL(raw),pre=__orbitCfg.$W.prefix;if(p.origin!==location.origin||!p.pathname.startsWith(pre))return"";` +
+      `from=new URL(__orbitCfg.P_(p.pathname.slice(pre.length)))}catch(x){return""}` +
       `let here=${c}.url;if(from.protocol==="https:"&&here.protocol==="http:")return"";` +
       `return from.origin===here.origin?from.href:from.origin+"/"}})`,
-    fixed: /Trap\("Document\.prototype\.referrer",\{get:ctx=>\{/,
+    fixed: /__orbitCfg\.P_\(p\.pathname\.slice\(pre\.length\)\)/,
   },
   {
     name: "location.ancestorOrigins",

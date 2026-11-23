@@ -17,6 +17,7 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
+const codec = require("../public/codec.js");
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = "http://localhost:" + PORT;
@@ -40,13 +41,13 @@ async function expectProxiedTab(page, label) {
   const deadline = Date.now() + 30000;
   let last = "";
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes("/scramjet/"));
+    const frame = page.frames().find((f) => f.url().includes(codec.prefix));
     if (frame) {
       try {
         const info = await frame.evaluate(() => ({
           title: document.title,
           text: document.body ? document.body.innerText : "",
-          // The server only ever answers /scramjet/ URLs with the wait page
+          // The server only ever answers proxied (/study/) URLs with the wait page
           // (or, before the fix, the app itself), so any other page means the
           // service worker proxied it. (Checking navigator.serviceWorker here
           // doesn't work: Scramjet hides it from proxied pages.)
@@ -123,12 +124,12 @@ async function loadTestPage(page, url) {
   await go(page, url);
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     const done = frame && await frame.evaluate(() => window.__done).catch(() => undefined);
     if (done !== undefined) return assert.equal(done, 4, "all 4 scripts should run");
     await page.waitForTimeout(50);
   }
-  const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+  const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
   const state = frame && await frame.evaluate(() => [window.__ran, window.__done, document.documentElement.outerHTML.slice(0, 300)]).catch((e) => e.message);
   throw new Error("test page never finished loading: " + url + " " + JSON.stringify({ state, hits, frames: page.frames().map((f) => f.url()) }));
 }
@@ -136,7 +137,7 @@ async function loadTestPage(page, url) {
 async function frameTitle(page, url) {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     const title = frame && await frame.evaluate(() => document.title).catch(() => "");
     if (title) return title;
     await page.waitForTimeout(100);
@@ -145,6 +146,27 @@ async function frameTitle(page, url) {
 }
 
 const tests = {
+  async "disguised addresses: no proxied request shows the real site"(browser) {
+    const host = "127.0.0.1:" + site.address().port;
+    const url = "http://" + host + "/page-disguise";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const seen = [];
+    context.on("request", (req) => seen.push(req.url()));
+    await loadTestPage(page, url);
+    const proxied = seen.filter((u) => new URL(u).pathname.startsWith(codec.prefix));
+    assert.ok(proxied.length >= 5, "page and its scripts went through the proxy (" + proxied.length + ")");
+    for (const u of proxied) {
+      const path = new URL(u).pathname;
+      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "disguised: " + path);
+      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "page-disguise", "scramjet"]) {
+        assert.ok(!u.includes(leak), "address leaks " + leak + ": " + u);
+      }
+    }
+    await context.close();
+    for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
+  },
+
   async "front page: revision app, only the special sign-in opens the browser"(browser) {
     const context = await browser.newSignedOutContext();
     const page = await context.newPage();
@@ -206,7 +228,7 @@ const tests = {
     const deadline = Date.now() + 20000;
     let title;
     while (Date.now() < deadline) {
-      const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+      const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
       title = frame && await frame.evaluate(() => document.title).catch(() => "");
       if (title) break;
       await page.waitForTimeout(100);
@@ -260,7 +282,7 @@ const tests = {
     // Make the next tab load skip the worker, as Safari sometimes does.
     await cdp.send("Network.setBypassServiceWorker", { bypass: true });
     page.on("response", (res) => {
-      if (res.url().includes("/scramjet/") && res.status() === 503) {
+      if (res.url().includes(codec.prefix) && res.status() === 503) {
         cdp.send("Network.setBypassServiceWorker", { bypass: false }).catch(() => {});
       }
     });
@@ -281,7 +303,7 @@ const tests = {
       const frame = document.createElement("iframe");
       frame.src = url;
       document.body.append(frame);
-    }, "/scramjet/" + encodeURIComponent(TARGET));
+    }, codec.prefix + codec.encode(TARGET));
     await reloaded;
     await context.close();
   },

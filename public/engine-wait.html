@@ -17,7 +17,7 @@
   </div>
   <script>
     // Shown inside a mini-browser tab when a page there didn't go through the
-    // service worker: the server sends it for stray /scramjet/ requests, and
+    // service worker: the server sends it for stray /study/ (proxied) requests, and
     // browser.html redirects here if the app loads inside one of its own tabs.
     //
     // Recovery escalates, each step rate-limited so it can never loop:
@@ -79,7 +79,7 @@
       }
       // The app itself loaded in this tab: the link pointed somewhere the
       // proxy couldn't rewrite. Reloading won't change that.
-      if (!location.pathname.startsWith("/scramjet/")) {
+      if (!location.pathname.startsWith("/study/")) {
         show("This link couldn't be opened through the proxy.", "Go back", () => history.back());
         return;
       }

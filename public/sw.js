@@ -1,5 +1,5 @@
 // Service worker: every request made by a proxied page passes through here.
-importScripts("/scram/scramjet.all.js?v=2");
+importScripts("/scram/scramjet.all.js?v=2", "/codec.js");
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
@@ -30,7 +30,7 @@ async function logError(entry) {
 function realUrl(proxied) {
   try {
     const url = new URL(proxied);
-    return url.pathname.startsWith("/scramjet/") ? decodeURIComponent(url.pathname.slice(10)) : proxied;
+    return url.pathname.startsWith(OrbitCodec.prefix) ? OrbitCodec.decode(url.pathname.slice(OrbitCodec.prefix.length)) : proxied;
   } catch (e) {
     return String(proxied);
   }
@@ -99,7 +99,7 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 // response for as long as the site itself allows, following the same rules
 // as the browser's own cache. Bump the version whenever Scramjet or its
 // settings change, since that changes the rewritten output.
-const ASSET_CACHE = "orbit-assets-v1";
+const ASSET_CACHE = "orbit-assets-v2"; // v2: disguised addresses (codec.js)
 // "" is fetch()/XMLHttpRequest: game engines (Unity, Godot...) load their
 // large .wasm/.data files that way.
 const CACHEABLE = new Set(["script", "style", "font", "image", "worker", "sharedworker", ""]);

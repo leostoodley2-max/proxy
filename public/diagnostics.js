@@ -39,7 +39,7 @@
     const value = await Promise.race([work(), timeout(ms)]);
     return { value, ms: Math.round(performance.now() - start) };
   }
-  // Fetch a real URL through the proxy (the service worker handles /scramjet/ URLs).
+  // Fetch a real URL through the proxy (the service worker handles proxied /study/ URLs).
   // Scramjet answers a request it couldn't make at all with an empty 500.
   async function viaProxy(url, init) {
     const res = await fetch(window.Engine.scramjet.encodeUrl(url), init);

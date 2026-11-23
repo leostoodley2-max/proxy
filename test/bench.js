@@ -12,6 +12,7 @@ const http = require("node:http");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { chromium } = require("playwright");
+const codec = require("../public/codec.js");
 
 const LATENCY = Number(process.env.LATENCY || 80);
 const SCRIPTS = 40, STYLES = 10, IMAGES = 20;
@@ -68,7 +69,7 @@ async function timeLoad(page, url) {
   await page.fill("#address", url);
   await page.press("#address", "Enter");
   for (;;) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     if (frame) {
       const done = await frame.evaluate(() => window.__done).catch(() => undefined);
       if (done !== undefined) {

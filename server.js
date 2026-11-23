@@ -129,7 +129,7 @@ app.get("/egress", (req, res) => res.set("Cache-Control", "no-store").json(getEg
 // it (not in control yet). Never answer with the app itself, or the browser UI
 // would load inside its own tab; send a page that waits for the worker and
 // retries instead.
-app.use("/scramjet/", (req, res) => {
+app.use("/study/", (req, res) => {
   res.status(503).set({ "Cache-Control": "no-store", "Retry-After": "1" });
   res.sendFile(path.join(__dirname, "public", "engine-wait.html"));
 });
