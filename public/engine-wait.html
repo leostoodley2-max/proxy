@@ -41,7 +41,7 @@
         if (window.parent !== window && window.parent.Engine) app = window.parent;
       } catch (e) {}
       if (!app) {
-        location.replace("/app");
+        location.replace("/"); // opened on its own: the revision front page
         return;
       }
 

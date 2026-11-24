@@ -146,6 +146,21 @@ async function frameTitle(page, url) {
 }
 
 const tests = {
+  async "proxied address opened on its own shows the revision page; from a link it opens"(browser) {
+    const real = "http://127.0.0.1:" + site.address().port + "/whoami";
+    const proxied = BASE + codec.prefix + codec.encode(real);
+    const context = await browser.newContext();
+    await openApp(context); // installs the service worker
+    const page = await context.newPage();
+    await page.goto(proxied); // typed / pasted / bookmarked: no referrer
+    await page.waitForURL(BASE + "/");
+    assert.match(await page.title(), /Recall/);
+    await page.goto(proxied, { referer: BASE + codec.prefix + codec.encode("http://127.0.0.1:1/") }); // like "Open in new tab"
+    await page.waitForFunction(() => document.title && !/Recall/.test(document.title), null, { timeout: 15000 });
+    assert.equal(await page.title(), "no cookies");
+    await context.close();
+  },
+
   async "disguised addresses: no proxied request shows the real site"(browser) {
     const host = "127.0.0.1:" + site.address().port;
     const url = "http://" + host + "/page-disguise";

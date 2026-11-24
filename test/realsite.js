@@ -98,6 +98,18 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
   await page.fill("#address", url);
   await page.press("#address", "Enter");
   await page.waitForTimeout(Number(seconds) * 1000);
+  // STEPS='[["fill","https://accounts.google.com","input[type=email]","x@example.com"],["click",...],["wait",5]]'
+  for (const [action, framePrefix, selector, value] of JSON.parse(process.env.STEPS || "[]")) {
+    if (action === "wait") { await page.waitForTimeout(Number(framePrefix) * 1000); continue; }
+    const frame = page.frames().find((f) => real(f.url()).startsWith(framePrefix));
+    if (!frame) { console.log("STEP      no frame " + framePrefix); continue; }
+    try {
+      if (action === "fill") await frame.fill(selector, value, { timeout: 10000 });
+      if (action === "click") await frame.click(selector, { timeout: 10000 });
+      if (action === "press") await frame.press(selector, value, { timeout: 10000 });
+      console.log("STEP      " + action + " " + selector + " ok");
+    } catch (e) { console.log("STEP      " + action + " " + selector + " failed: " + e.message.split("\n")[0]); }
+  }
   for (const f of page.frames()) {
     let info = "";
     try { info = await f.evaluate(() => document.title + " | " + (document.body ? document.body.innerText.slice(0, 150) : "")); } catch (e) { info = "(" + e.message.slice(0, 60) + ")"; }

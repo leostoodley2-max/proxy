@@ -176,6 +176,14 @@ async function handleRequest(event) {
   if (!scramjet.route(event)) return fetch(event.request);
 
   const request = event.request;
+  // A proxied address opened on its own in a browser tab (typed, pasted,
+  // bookmarked: no referrer) goes to the revision front page instead of the
+  // site. Links opened in a new tab from a proxied page carry a referrer and
+  // still open normally; pages inside the proxy's own tabs are frames, so
+  // this never affects them.
+  if (request.mode === "navigate" && request.destination === "document" && !request.referrer) {
+    return Response.redirect(self.location.origin + "/", 302);
+  }
   if (!canUseCache(request)) return scramjet.fetch(event);
   const key = cacheKey(request);
   try {
