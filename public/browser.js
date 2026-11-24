@@ -45,6 +45,10 @@
     try { return new URL(url).hostname || url; } catch { return ""; }
   }
   function label(tab) { return tab.title || hostname(tab.url) || "New Tab"; }
+  // The address bar shows the disguised address (see codec.js), not the real site.
+  function shown(url) {
+    return url ? location.host + OrbitCodec.prefix + OrbitCodec.encode(url) : "";
+  }
 
   // Keep the tab buttons stable so focus and strip scrolling survive updates.
   function addTab(url = "", title = "", saved = {}) {
@@ -81,7 +85,7 @@
     if (selected) document.title = name;
   }
   function updateControls() {
-    if (!(addressEdited && document.activeElement === address)) address.value = active.url;
+    if (!(addressEdited && document.activeElement === address)) address.value = shown(active.url);
     $('[data-command="back"]').disabled = !ready || active.historyIndex <= 0;
     $('[data-command="forward"]').disabled = !ready || active.historyIndex >= active.history.length - 1;
     $('[data-command="reload"]').disabled = !(active.url && active.engine && ready);

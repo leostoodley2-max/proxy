@@ -103,6 +103,12 @@
   function toUrl(input) {
     const text = String(input || "").trim();
     if (!text) return "";
+    // A disguised address from the address bar (…/study/topic-topic-…): decode it.
+    const disguised = /(?:^|\/)study\/([a-z]+-[a-z]+-[A-Za-z0-9_-]+(?:[?#].*)?)$/.exec(text);
+    if (disguised) {
+      const real = OrbitCodec.decode(disguised[1]);
+      if (/^https?:\/\//i.test(real)) return real;
+    }
     // Already a full URL.
     try {
       const u = new URL(text);

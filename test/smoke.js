@@ -163,6 +163,11 @@ const tests = {
         assert.ok(!u.includes(leak), "address leaks " + leak + ": " + u);
       }
     }
+    // The address bar shows the disguised address too, and it can be typed back in.
+    const shown = await page.inputValue("#address");
+    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "address bar: " + shown);
+    assert.ok(!shown.includes("127.0.0.1") && !shown.includes("page-disguise"), "address bar leaks: " + shown);
+    assert.equal(await page.evaluate((text) => window.Engine.toUrl(text), shown), url);
     await context.close();
     for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
   },
