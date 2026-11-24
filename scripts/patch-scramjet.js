@@ -62,6 +62,13 @@
 //    blocked on filtered networks, and visible. Fix: rewrite text appended or
 //    inserted into a <style> (appendChild/insertBefore/replaceChild/append/
 //    prepend), once per text node.
+//
+// 11. Module scripts created by code: Scramjet marks module addresses with
+//    "?type=module" (in HTML and in imports) but not when a page creates a
+//    <script type="module"> element itself and sets its src. The same module
+//    then loads under two addresses, so it runs twice with separate state
+//    (CrazyGames' gameframe: "[GameConfig] is not set", game never starts).
+//    Fix: when such an element is inserted, add the marker if it's missing.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -214,6 +221,21 @@ const patches = [
       `if(typeof a==="string"&&all===t.args){t.args[k]=(0,${mod}.${fn})(a,${c}.meta)}` +
       `else if(a&&a.nodeType===3&&!done.has(a)){a.data=(0,${mod}.${fn})(a.data,${c}.meta);done.add(a)}}}}),`,
     fixed: /self\.__orbitCssDone\|\|/,
+  },
+  {
+    name: "module scripts created by code",
+    files: ["scramjet.all.js"],
+    impact: "modules added by page code can load twice (CrazyGames games don't start)",
+    // Same anchor as the CSS patch: the Text.prototype.appendData proxy.
+    buggy: /((\w+)\.Proxy\("Text\.prototype\.appendData",\{apply\(t\)\{t\.this\.parentElement\?\.tagName==="STYLE"&&\(t\.args\[0\]=\(0,\w+\.\w+\)\(t\.args\[0\],\2\.meta\)\)\}\}\),)/g,
+    replace: (_, original, c) => original +
+      `${c}.Proxy(["Node.prototype.appendChild","Node.prototype.insertBefore","Node.prototype.replaceChild","Element.prototype.append","Element.prototype.prepend"],{apply(t){` +
+      `/* __orbitModuleSrc */for(let a of t.args){if(!a||a.localName!=="script")continue;` +
+      `let type=${c}.natives.call("Element.prototype.getAttribute",a,"type");if(!type||type.trim().toLowerCase()!=="module")continue;` +
+      `let src=${c}.natives.call("Element.prototype.getAttribute",a,"src");` +
+      `if(src&&src.startsWith(location.origin+"/")&&!/[?&]type=module(&|$)/.test(src))` +
+      `${c}.natives.call("Element.prototype.setAttribute",a,"src",src+(src.includes("?")?"&":"?")+"type=module")}}}),`,
+    fixed: /\/\* __orbitModuleSrc \*\//,
   },
   {
     name: "location.ancestorOrigins",

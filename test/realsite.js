@@ -31,12 +31,21 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
     try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
     if (test) window.__orbitTestTransport = "/__test/transport.mjs";
   }, serverFetch);
+  if (process.env.LOG_MESSAGES) {
+    await context.addInitScript((max) => {
+      addEventListener("message", (e) => {
+        let d = e.data;
+        try { d = typeof d === "string" ? d : JSON.stringify(d); } catch (x) { d = String(d); }
+        if (d && d.length < 20000) console.warn("MSG to " + document.title + " from " + e.origin + ": " + d.slice(0, max));
+      }, true);
+    }, process.env.LOG_MESSAGES === "long" ? 8000 : 160);
+  }
   const seen = new Set();
   const log = (kind, text) => {
     const key = kind + text.slice(0, 200);
     if (seen.has(key)) return;
     seen.add(key);
-    console.log(kind.padEnd(10) + text.slice(0, 500).replace(/\s+/g, " "));
+    console.log(kind.padEnd(10) + text.slice(0, process.env.LOG_MESSAGES === "long" ? 9000 : 500).replace(/\s+/g, " "));
   };
   const real = (u) => {
     try {
@@ -49,7 +58,26 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
   context.on("requestfailed", (r) => log("REQFAIL", real(r.url()) + " " + (r.failure() && r.failure().errorText)));
   context.on("response", (r) => { if (r.status() >= 400 && r.url().includes(codec.prefix)) log("HTTP " + r.status(), real(r.url())); });
 
+  if (process.env.LIST_REQ) context.on("request", (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith(codec.prefix)) return;
+    const realUrl = codec.decode(u.pathname.slice(codec.prefix.length));
+    if (new RegExp(process.env.LIST_REQ).test(realUrl)) console.log("REQ       " + r.resourceType().padEnd(8) + " real=" + realUrl.slice(0, 100) + "  proxied-query=" + u.search);
+  });
   const page = await context.newPage();
+  if (process.env.CDP_INIT) {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Network.enable");
+    cdp.on("Network.requestWillBeSent", (e) => {
+      const u = new URL(e.request.url);
+      if (!u.pathname.startsWith(codec.prefix)) return;
+      const realUrl = codec.decode(u.pathname.slice(codec.prefix.length));
+      if (!new RegExp(process.env.CDP_INIT).test(realUrl)) return;
+      const i = e.initiator || {};
+      const frames = (i.stack && i.stack.callFrames || []).slice(0, 4).map((f) => real(f.url).replace(/^.*\//, "") + ":" + f.lineNumber + ":" + f.columnNumber + " " + f.functionName);
+      console.log("INIT      " + realUrl.replace(/^.*gameframe/, "") + u.search + " <- " + i.type + " " + (i.url ? real(i.url).slice(0, 90) : "") + " " + frames.join(" < "));
+    });
+  }
   if (process.env.CDP_NET) {
     const cdp = await context.newCDPSession(page);
     await cdp.send("Network.enable");
