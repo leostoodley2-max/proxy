@@ -54,6 +54,14 @@
 // 9. location.ancestorOrigins was missing from Scramjet's location object;
 //    sitelocks read it too. Fix: list the real origins of the proxied
 //    parent frames, like the browser does.
+//
+// 10. CSS added as a text node: Scramjet rewrites <style> CSS set through
+//    textContent/innerHTML, but not the most common route, used by webpack's
+//    style-loader and many games: style.appendChild(document.createTextNode(css)).
+//    Addresses in that CSS (fonts, images) then went to the real site directly:
+//    blocked on filtered networks, and visible. Fix: rewrite text appended or
+//    inserted into a <style> (appendChild/insertBefore/replaceChild/append/
+//    prepend), once per text node.
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -191,6 +199,21 @@ const patches = [
       `let here=${c}.url;if(from.protocol==="https:"&&here.protocol==="http:")return"";` +
       `return from.origin===here.origin?from.href:from.origin+"/"}})`,
     fixed: /__orbitCfg\.P_\(p\.pathname\.slice\(pre\.length\)\)/,
+  },
+  {
+    name: "CSS text nodes in <style>",
+    files: ["scramjet.all.js"],
+    impact: "fonts and images in script-added CSS load directly from the real site",
+    // e.Proxy("Text.prototype.appendData",{apply(t){t.this.parentElement?.tagName==="STYLE"&&(t.args[0]=(0,i.s)(t.args[0],e.meta))}}),
+    buggy: /((\w+)\.Proxy\("Text\.prototype\.appendData",\{apply\(t\)\{t\.this\.parentElement\?\.tagName==="STYLE"&&\(t\.args\[0\]=\(0,(\w+)\.(\w+)\)\(t\.args\[0\],\2\.meta\)\)\}\}\),)/g,
+    replace: (_, original, c, mod, fn) => original +
+      `${c}.Proxy(["Node.prototype.appendChild","Node.prototype.insertBefore","Node.prototype.replaceChild","Element.prototype.append","Element.prototype.prepend"],{apply(t){` +
+      `let p=t.this;if(!p||p.localName!=="style")return;let done=self.__orbitCssDone||(self.__orbitCssDone=new WeakSet);` +
+      `let all=/append|prepend/.test(t.fn&&t.fn.name||"")?t.args:[t.args[0]];` +
+      `for(let k=0;k<t.args.length;k++){let a=t.args[k];if(!all.includes(a))continue;` +
+      `if(typeof a==="string"&&all===t.args){t.args[k]=(0,${mod}.${fn})(a,${c}.meta)}` +
+      `else if(a&&a.nodeType===3&&!done.has(a)){a.data=(0,${mod}.${fn})(a.data,${c}.meta);done.add(a)}}}}),`,
+    fixed: /self\.__orbitCssDone\|\|/,
   },
   {
     name: "location.ancestorOrigins",

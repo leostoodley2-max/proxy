@@ -104,6 +104,9 @@ app.get("/sw.js", (req, res) => {
 // UI files revalidate on every load (cheap 304s) so a new deploy shows up at once.
 app.use(express.static(path.join(__dirname, "public"), { maxAge: 0 }));
 
+// Test only: lets tests in a sandbox reach real sites (see test/support/server-fetch.js).
+if (process.env.ORBIT_TEST_SERVER_FETCH === "1") require("./test/support/server-fetch")(app);
+
 // Public suffix list for Scramjet (see scripts/patch-scramjet.js), one rule
 // per line, from the `psl` package. Read as data, not executed.
 const publicSuffixList = (() => {

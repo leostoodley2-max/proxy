@@ -76,6 +76,12 @@
     // libcurl wasm has finished loading, so the first request after the worker
     // (re)imports it fails with "wasm not loaded yet". Wrap it so init() waits
     // and retries. Always (re)set it so a reload never keeps a broken instance.
+    // Tests can swap in a server-side transport to reach real sites from a sandbox.
+    if (window.__orbitTestTransport) {
+      const url = JSON.stringify(window.__orbitTestTransport);
+      await connection.setManualTransport(`const { default: T } = await import(${url}); return [T, ${url}];`, []);
+      return;
+    }
     await connection.setManualTransport(
       `
       const { default: Libcurl } = await import(${JSON.stringify(TRANSPORT)});
