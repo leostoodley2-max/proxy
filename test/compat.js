@@ -15,6 +15,8 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
+const accounts = require("./support/accounts.js");
+const codec = require("../public/codec.js");
 
 const PROXY_PORT = 19500 + Math.floor(Math.random() * 400);
 const VIDEO = fs.readFileSync(path.join(__dirname, "fixtures", "clip.webm"));   // VP9, 6 s, no audio
@@ -22,6 +24,7 @@ const SOUND = fs.readFileSync(path.join(__dirname, "fixtures", "sound.webm"));  
 const BIG = Buffer.alloc(16 * 1024 * 1024, "proxy throughput test ");
 const WASM = Buffer.from("0061736d0100000001070160027f7f017f030201000707010361646400000a09010700200020016a0b", "hex");
 const beacons = [];
+const cssHits = [];
 let wsPort;
 function wsServer() {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
@@ -153,6 +156,28 @@ const tests = {
     });
     document.body.append(f);
   }),
+  "module script created by code runs once": async () => {
+    window.__modRuns = 0;
+    const s = document.createElement("script");
+    s.type = "module";
+    s.src = "/mod-entry.js";
+    document.head.appendChild(s);
+    for (let i = 0; i < 100 && !window.__modDone; i++) await new Promise((r) => setTimeout(r, 50));
+    return eq(window.__modRuns + ":" + window.__modDone, "1:true", "runs:done");
+  },
+  "CSS added as a text node goes through the proxy": async () => {
+    const style = document.createElement("style");
+    style.appendChild(document.createTextNode(".cssimg { background-image: url(" + OTHER + "/cssimg.svg); width: 8px; height: 8px; }"));
+    document.head.appendChild(style);
+    const div = document.createElement("div");
+    div.className = "cssimg";
+    document.body.append(div);
+    await new Promise((r) => setTimeout(r, 1500));
+    const hits = (await (await fetch(OTHER + "/cssimg-hits")).text()).split("\\n").filter(Boolean);
+    eq(hits.length > 0, true, "image requested");
+    // A request straight from the browser carries the proxy's own address as referrer.
+    return eq(hits.some((h) => h.includes("/study/") || h.includes("localhost")), false, "leaked: " + hits.join(" "));
+  },
   "CORS fetch with credentials": async () => {
     const r = await fetch(OTHER + "/cors", { credentials: "include" });
     return eq(await r.text(), "cors-ok", "cors");
@@ -268,6 +293,10 @@ function site(otherOrigin) {
       switch (url.pathname) {
         case "/page": return send(200, { "Content-Type": "text/html" }, PAGE(otherOrigin));
         case "/sitelock": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('sitelock:' + (location.ancestorOrigins ? location.ancestorOrigins[0] : 'none') + '|' + document.referrer.replace(/page$/, ''), '*')</script>");
+        case "/mod-entry.js": return send(200, js, `window.__modRuns++; export const config = { ready: true }; import("./mod-chunk.js").then((m) => { window.__modDone = m.check(); });`);
+        case "/mod-chunk.js": return send(200, js, `import { config } from "./mod-entry.js"; export const check = () => config.ready === true;`);
+        case "/cssimg.svg": cssHits.push(String(req.headers.referer || "none")); return send(200, { "Content-Type": "image/svg+xml", "Access-Control-Allow-Origin": "*" }, `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"/>`);
+        case "/cssimg-hits": { const out = cssHits.join("\n"); cssHits.length = 0; return send(200, { "Content-Type": "text/plain", "Access-Control-Allow-Origin": "*" }, out); }
         case "/threads": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('threads:' + crossOriginIsolated + ':' + typeof SharedArrayBuffer, '*')</script>");
         case "/child": return send(200, { "Content-Type": "text/html" }, "<script>parent.postMessage('child-ready', '*')</script>");
         case "/echo": return send(200, { "Content-Type": req.headers["content-type"] || "application/octet-stream" }, body);
@@ -307,7 +336,7 @@ function site(otherOrigin) {
 
 function startProxy() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1" },
+    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve) => child.stdout.on("data", (c) => String(c).includes("Proxy running") && resolve(child)));
@@ -324,18 +353,6 @@ async function results(frameOrPage) {
 }
 
 
-// The proxy browser (/app) is behind the front page's sign-in; start signed in.
-function signedIn(browser) {
-  const newContext = browser.newContext.bind(browser);
-  browser.newContext = async (options) => {
-    const context = await newContext(options);
-    await context.addInitScript(() => {
-      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
-    });
-    return context;
-  };
-  return browser;
-}
 
 (async () => {
   const wss = await wsServer();
@@ -343,7 +360,7 @@ function signedIn(browser) {
   const main = await site("http://127.0.0.1:" + other.address().port);
   const pageUrl = "http://127.0.0.1:" + main.address().port + "/page";
   const proxy = await startProxy();
-  const browser = signedIn(await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }));
+  const browser = accounts.signedIn(await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }), () => "http://localhost:" + PROXY_PORT);
   let regressions = 0;
   try {
     // Direct (control): served cross-origin isolated like the proxy would be.
@@ -363,7 +380,7 @@ function signedIn(browser) {
     await page.fill("#address", pageUrl);
     await page.press("#address", "Enter");
     let frame;
-    while (!(frame = page.frames().find((f) => f.url().includes(encodeURIComponent(pageUrl))))) await page.waitForTimeout(100);
+    while (!(frame = page.frames().find((f) => f.url().includes(codec.encode(pageUrl))))) await page.waitForTimeout(100);
     const got = await results(frame);
 
     for (const name of Object.keys(want)) {

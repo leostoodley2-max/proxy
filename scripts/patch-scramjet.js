@@ -47,12 +47,34 @@
 // 8. document.referrer: Scramjet returns the page's own URL. Game sitelocks
 //    (and analytics, and some logins) check the referrer to see which site
 //    embeds them, so games refused to start. Fix: decode the real (proxied)
-//    referrer and apply the browser's default policy (full URL same-origin,
-//    origin only cross-origin, nothing from https to http).
+//    referrer with the configured prefix and codec (public/codec.js) and apply
+//    the browser's default policy (full URL same-origin, origin only
+//    cross-origin, nothing from https to http).
 //
 // 9. location.ancestorOrigins was missing from Scramjet's location object;
 //    sitelocks read it too. Fix: list the real origins of the proxied
 //    parent frames, like the browser does.
+//
+// 10. CSS added as a text node: Scramjet rewrites <style> CSS set through
+//    textContent/innerHTML, but not the most common route, used by webpack's
+//    style-loader and many games: style.appendChild(document.createTextNode(css)).
+//    Addresses in that CSS (fonts, images) then went to the real site directly:
+//    blocked on filtered networks, and visible. Fix: rewrite text appended or
+//    inserted into a <style> (appendChild/insertBefore/replaceChild/append/
+//    prepend), once per text node.
+//
+// 11. Module scripts created by code: Scramjet marks module addresses with
+//    "?type=module" (in HTML and in imports) but not when a page creates a
+//    <script type="module"> element itself and sets its src. The same module
+//    then loads under two addresses, so it runs twice with separate state
+//    (CrazyGames' gameframe: "[GameConfig] is not set", game never starts).
+//    Fix: when such an element is inserted, add the marker if it's missing.
+//
+// 12. Cookie jar restore: CookieStore.load() returns without loading when
+//    given an object, which is exactly what IndexedDB hands back. So every
+//    time the browser restarted the idle service worker (~30 s), all cookies
+//    were forgotten and sites signed you out. Fix: load objects too.
+//    (sw.js also saves cookies set by responses, which Scramjet never stored.)
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -177,15 +199,58 @@ const patches = [
     name: "document.referrer",
     files: ["scramjet.all.js"],
     impact: "game sitelocks see the wrong referrer",
-    // e.Trap("Document.prototype.referrer",{get:()=>e.url.toString()})
-    buggy: /(\w+)\.Trap\("Document\.prototype\.referrer",\{get:\(\)=>\1\.url\.toString\(\)\}\)/g,
-    replace: (_, c) => `${c}.Trap("Document.prototype.referrer",{get:ctx=>{` +
+    // Module header `{default:()=>i});var n=r(884);function i(e,t){let r=String;e.Proxy(["Document.prototype.querySelector"`
+    // gains access to Scramjet's config (module 37: prefix and codec), then the trap
+    // e.Trap("Document.prototype.referrer",{get:()=>e.url.toString()}) (or this patch's
+    // earlier /scramjet/-only version) is replaced.
+    buggy: /(\{default:\(\)=>(\w+)\}\);var \w+=r\(884\);)(function \2\(e,t\)\{let r=String;e\.Proxy\(\["Document\.prototype\.querySelector"[^]*?)(\w+)\.Trap\("Document\.prototype\.referrer",\{get:(?:\(\)=>\4\.url\.toString\(\)|ctx=>\{let raw;[^]*?from\.origin\+"\/"\})\}\)/g,
+    replace: (_, header, _name, body, c) => header + "var __orbitCfg=r(37);" + body +
+      `${c}.Trap("Document.prototype.referrer",{get:ctx=>{` +
       `let raw;try{raw=ctx.get()}catch(x){return""}if(!raw)return"";` +
-      `let from;try{let p=new URL(raw);if(!p.pathname.startsWith("/scramjet/"))return"";` +
-      `from=new URL(decodeURIComponent(p.pathname.slice(10)))}catch(x){return""}` +
+      `let from;try{let p=new URL(raw),pre=__orbitCfg.$W.prefix;if(p.origin!==location.origin||!p.pathname.startsWith(pre))return"";` +
+      `from=new URL(__orbitCfg.P_(p.pathname.slice(pre.length)))}catch(x){return""}` +
       `let here=${c}.url;if(from.protocol==="https:"&&here.protocol==="http:")return"";` +
       `return from.origin===here.origin?from.href:from.origin+"/"}})`,
-    fixed: /Trap\("Document\.prototype\.referrer",\{get:ctx=>\{/,
+    fixed: /__orbitCfg\.P_\(p\.pathname\.slice\(pre\.length\)\)/,
+  },
+  {
+    name: "CSS text nodes in <style>",
+    files: ["scramjet.all.js"],
+    impact: "fonts and images in script-added CSS load directly from the real site",
+    // e.Proxy("Text.prototype.appendData",{apply(t){t.this.parentElement?.tagName==="STYLE"&&(t.args[0]=(0,i.s)(t.args[0],e.meta))}}),
+    buggy: /((\w+)\.Proxy\("Text\.prototype\.appendData",\{apply\(t\)\{t\.this\.parentElement\?\.tagName==="STYLE"&&\(t\.args\[0\]=\(0,(\w+)\.(\w+)\)\(t\.args\[0\],\2\.meta\)\)\}\}\),)/g,
+    replace: (_, original, c, mod, fn) => original +
+      `${c}.Proxy(["Node.prototype.appendChild","Node.prototype.insertBefore","Node.prototype.replaceChild","Element.prototype.append","Element.prototype.prepend"],{apply(t){` +
+      `let p=t.this;if(!p||p.localName!=="style")return;let done=self.__orbitCssDone||(self.__orbitCssDone=new WeakSet);` +
+      `let all=/append|prepend/.test(t.fn&&t.fn.name||"")?t.args:[t.args[0]];` +
+      `for(let k=0;k<t.args.length;k++){let a=t.args[k];if(!all.includes(a))continue;` +
+      `if(typeof a==="string"&&all===t.args){t.args[k]=(0,${mod}.${fn})(a,${c}.meta)}` +
+      `else if(a&&a.nodeType===3&&!done.has(a)){a.data=(0,${mod}.${fn})(a.data,${c}.meta);done.add(a)}}}}),`,
+    fixed: /self\.__orbitCssDone\|\|/,
+  },
+  {
+    name: "module scripts created by code",
+    files: ["scramjet.all.js"],
+    impact: "modules added by page code can load twice (CrazyGames games don't start)",
+    // Same anchor as the CSS patch: the Text.prototype.appendData proxy.
+    buggy: /((\w+)\.Proxy\("Text\.prototype\.appendData",\{apply\(t\)\{t\.this\.parentElement\?\.tagName==="STYLE"&&\(t\.args\[0\]=\(0,\w+\.\w+\)\(t\.args\[0\],\2\.meta\)\)\}\}\),)/g,
+    replace: (_, original, c) => original +
+      `${c}.Proxy(["Node.prototype.appendChild","Node.prototype.insertBefore","Node.prototype.replaceChild","Element.prototype.append","Element.prototype.prepend"],{apply(t){` +
+      `/* __orbitModuleSrc */for(let a of t.args){if(!a||a.localName!=="script")continue;` +
+      `let type=${c}.natives.call("Element.prototype.getAttribute",a,"type");if(!type||type.trim().toLowerCase()!=="module")continue;` +
+      `let src=${c}.natives.call("Element.prototype.getAttribute",a,"src");` +
+      `if(src&&src.startsWith(location.origin+"/")&&!/[?&]type=module(&|$)/.test(src))` +
+      `${c}.natives.call("Element.prototype.setAttribute",a,"src",src+(src.includes("?")?"&":"?")+"type=module")}}}),`,
+    fixed: /\/\* __orbitModuleSrc \*\//,
+  },
+  {
+    name: "cookie jar restore",
+    files: ["scramjet.all.js"],
+    impact: "sites sign you out whenever the service worker restarts",
+    // load(e){if("object"==typeof e)return e;this.cookies=JSON.parse(e)}
+    buggy: /load\((\w+)\)\{if\("object"==typeof \1\)return \1;this\.cookies=JSON\.parse\(\1\)\}/g,
+    replace: (_, a) => `load(${a}){if("object"==typeof ${a}){this.cookies=${a}||{};return}this.cookies=JSON.parse(${a})}`,
+    fixed: /load\((\w+)\)\{if\("object"==typeof \1\)\{this\.cookies=\1\|\|\{\};return\}/,
   },
   {
     name: "location.ancestorOrigins",

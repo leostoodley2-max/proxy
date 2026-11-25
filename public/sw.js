@@ -1,5 +1,5 @@
 // Service worker: every request made by a proxied page passes through here.
-importScripts("/scram/scramjet.all.js?v=2");
+importScripts("/scram/scramjet.all.js?v=2", "/codec.js");
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
@@ -30,7 +30,7 @@ async function logError(entry) {
 function realUrl(proxied) {
   try {
     const url = new URL(proxied);
-    return url.pathname.startsWith("/scramjet/") ? decodeURIComponent(url.pathname.slice(10)) : proxied;
+    return url.pathname.startsWith(OrbitCodec.prefix) ? OrbitCodec.decode(url.pathname.slice(OrbitCodec.prefix.length)) : proxied;
   } catch (e) {
     return String(proxied);
   }
@@ -49,6 +49,48 @@ console.error = (...args) => {
 self.addEventListener("message", (event) => {
   if (!event.data || event.data.type !== "orbit-diagnostics") return;
   event.waitUntil(loadErrors().then((errors) => event.source && event.source.postMessage({ type: "orbit-diagnostics", errors })));
+});
+
+// --- Cookie jar persistence -------------------------------------------------
+// Scramjet keeps cookies in memory and only saved the ones pages set from
+// script; cookies sites set in responses (most sign-ins) were lost whenever
+// the browser stopped this worker. Save the jar shortly after any change.
+const jarDb = () => new Promise((resolve, reject) => {
+  const req = indexedDB.open("$scramjet");
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+async function saveJar() {
+  const db = await jarDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("cookies", "readwrite");
+    tx.objectStore("cookies").put(JSON.parse(scramjet.cookieStore.dump()), "cookies");
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function reloadJar() {
+  const db = await jarDb();
+  const jar = await new Promise((resolve, reject) => {
+    const req = db.transaction("cookies").objectStore("cookies").get("cookies");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  scramjet.cookieStore.load(jar || {});
+}
+let saveTimer = null;
+const setCookies = scramjet.cookieStore.setCookies.bind(scramjet.cookieStore);
+scramjet.cookieStore.setCookies = (list, url) => {
+  setCookies(list, url);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveJar().catch((e) => console.warn("[orbit] couldn't save cookies", e)), 1000);
+};
+// The browser page asks for this after syncing sign-ins from the account.
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "orbit-reload-cookies") return;
+  event.waitUntil(reloadJar().then(() => event.source && event.source.postMessage({ type: "orbit-cookies-reloaded" })));
 });
 
 // Retry requests that fail in transit (dropped tunnel, connection reset, TLS
@@ -99,7 +141,7 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 // response for as long as the site itself allows, following the same rules
 // as the browser's own cache. Bump the version whenever Scramjet or its
 // settings change, since that changes the rewritten output.
-const ASSET_CACHE = "orbit-assets-v1";
+const ASSET_CACHE = "orbit-assets-v2"; // v2: disguised addresses (codec.js)
 // "" is fetch()/XMLHttpRequest: game engines (Unity, Godot...) load their
 // large .wasm/.data files that way.
 const CACHEABLE = new Set(["script", "style", "font", "image", "worker", "sharedworker", ""]);
@@ -176,6 +218,14 @@ async function handleRequest(event) {
   if (!scramjet.route(event)) return fetch(event.request);
 
   const request = event.request;
+  // A proxied address opened on its own in a browser tab (typed, pasted,
+  // bookmarked: no referrer) goes to the revision front page instead of the
+  // site. Links opened in a new tab from a proxied page carry a referrer and
+  // still open normally; pages inside the proxy's own tabs are frames, so
+  // this never affects them.
+  if (request.mode === "navigate" && request.destination === "document" && !request.referrer) {
+    return Response.redirect(self.location.origin + "/", 302);
+  }
   if (!canUseCache(request)) return scramjet.fetch(event);
   const key = cacheKey(request);
   try {

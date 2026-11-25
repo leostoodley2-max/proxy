@@ -12,6 +12,8 @@ const http = require("node:http");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { chromium } = require("playwright");
+const accounts = require("./support/accounts.js");
+const codec = require("../public/codec.js");
 
 const LATENCY = Number(process.env.LATENCY || 80);
 const SCRIPTS = 40, STYLES = 10, IMAGES = 20;
@@ -57,7 +59,7 @@ function startSite() {
 
 function startProxy() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1" },
+    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve) => child.stdout.on("data", (c) => String(c).includes("Proxy running") && resolve(child)));
@@ -68,7 +70,7 @@ async function timeLoad(page, url) {
   await page.fill("#address", url);
   await page.press("#address", "Enter");
   for (;;) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     if (frame) {
       const done = await frame.evaluate(() => window.__done).catch(() => undefined);
       if (done !== undefined) {
@@ -82,24 +84,12 @@ async function timeLoad(page, url) {
 }
 
 
-// The proxy browser (/app) is behind the front page's sign-in; start signed in.
-function signedIn(browser) {
-  const newContext = browser.newContext.bind(browser);
-  browser.newContext = async (options) => {
-    const context = await newContext(options);
-    await context.addInitScript(() => {
-      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
-    });
-    return context;
-  };
-  return browser;
-}
 
 (async () => {
   const site = await startSite();
   const proxy = await startProxy();
   const base = "http://127.0.0.1:" + site.address().port;
-  const browser = signedIn(await chromium.launch());
+  const browser = accounts.signedIn(await chromium.launch(), () => "http://localhost:" + PROXY_PORT);
   try {
     const context = await browser.newContext();
     let page = await context.newPage();

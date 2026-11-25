@@ -3,3 +3,4 @@ bin/
 .warp.json
 .warp.json.*.tmp
 precompressed/
+data/

@@ -14,8 +14,10 @@
   const TRANSPORT = "/libcurl/index.mjs";
 
   const { ScramjetController } = $scramjetLoadController();
+  // Proxied pages get disguised addresses (/study/<topic>-<topic>-...), see codec.js.
   const scramjet = new ScramjetController({
-    prefix: "/scramjet/",
+    prefix: OrbitCodec.prefix,
+    codec: { encode: OrbitCodec.encode, decode: OrbitCodec.decode },
     files: {
       wasm: "/scram/scramjet.wasm.wasm",
       all: "/scram/scramjet.all.js?v=2",
@@ -74,6 +76,12 @@
     // libcurl wasm has finished loading, so the first request after the worker
     // (re)imports it fails with "wasm not loaded yet". Wrap it so init() waits
     // and retries. Always (re)set it so a reload never keeps a broken instance.
+    // Tests can swap in a server-side transport to reach real sites from a sandbox.
+    if (window.__orbitTestTransport) {
+      const url = JSON.stringify(window.__orbitTestTransport);
+      await connection.setManualTransport(`const { default: T } = await import(${url}); return [T, ${url}];`, []);
+      return;
+    }
     await connection.setManualTransport(
       `
       const { default: Libcurl } = await import(${JSON.stringify(TRANSPORT)});
@@ -101,6 +109,12 @@
   function toUrl(input) {
     const text = String(input || "").trim();
     if (!text) return "";
+    // A disguised address from the address bar (…/study/topic-topic-…): decode it.
+    const disguised = /(?:^|\/)study\/([a-z]+-[a-z]+-[A-Za-z0-9_-]+(?:[?#].*)?)$/.exec(text);
+    if (disguised) {
+      const real = OrbitCodec.decode(disguised[1]);
+      if (/^https?:\/\//i.test(real)) return real;
+    }
     // Already a full URL.
     try {
       const u = new URL(text);
@@ -169,7 +183,7 @@
       if (!raw || /^(javascript|mailto|tel|blob|data):/i.test(raw)) return null;
       try {
         const u = new URL(raw, location.href);
-        if (u.origin === location.origin && u.pathname.startsWith("/scramjet/")) return scramjet.decodeUrl(u.href);
+        if (u.origin === location.origin && u.pathname.startsWith(OrbitCodec.prefix)) return scramjet.decodeUrl(u.href);
         if (u.protocol === "http:" || u.protocol === "https:") return u.href;
       } catch (e) {}
       return null;

@@ -17,6 +17,8 @@ const { spawn } = require("node:child_process");
 const path = require("node:path");
 const assert = require("node:assert/strict");
 const { chromium } = require("playwright");
+const accounts = require("./support/accounts.js");
+const codec = require("../public/codec.js");
 
 const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = "http://localhost:" + PORT;
@@ -24,7 +26,7 @@ const TARGET = "https://example.com/";
 
 function startServer() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1" },
+    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve, reject) => {
@@ -40,13 +42,13 @@ async function expectProxiedTab(page, label) {
   const deadline = Date.now() + 30000;
   let last = "";
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes("/scramjet/"));
+    const frame = page.frames().find((f) => f.url().includes(codec.prefix));
     if (frame) {
       try {
         const info = await frame.evaluate(() => ({
           title: document.title,
           text: document.body ? document.body.innerText : "",
-          // The server only ever answers /scramjet/ URLs with the wait page
+          // The server only ever answers proxied (/study/) URLs with the wait page
           // (or, before the fix, the app itself), so any other page means the
           // service worker proxied it. (Checking navigator.serviceWorker here
           // doesn't work: Scramjet hides it from proxied pages.)
@@ -88,6 +90,14 @@ const site = http.createServer((req, res) => {
     "/nostore.js": "no-store",
     "/short.js": "max-age=5",
   };
+  if (pathname === "/setcookie") {
+    res.writeHead(200, { "Content-Type": "text/html", "Set-Cookie": "login=yes-" + Date.now() + "; Path=/; HttpOnly", "Cache-Control": "no-store" });
+    return res.end("<title>set</title>");
+  }
+  if (pathname === "/big") {
+    res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
+    return res.end("<title>big</title><!--" + "x".repeat(2_000_000) + "-->");
+  }
   if (pathname === "/whoami") { // shows the Cookie header the site received
     res.writeHead(200, { "Content-Type": "text/html", "Cache-Control": "no-store" });
     return res.end("<title>" + (req.headers.cookie || "no cookies").replace(/[<>&]/g, "") + "</title>");
@@ -123,12 +133,12 @@ async function loadTestPage(page, url) {
   await go(page, url);
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     const done = frame && await frame.evaluate(() => window.__done).catch(() => undefined);
     if (done !== undefined) return assert.equal(done, 4, "all 4 scripts should run");
     await page.waitForTimeout(50);
   }
-  const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+  const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
   const state = frame && await frame.evaluate(() => [window.__ran, window.__done, document.documentElement.outerHTML.slice(0, 300)]).catch((e) => e.message);
   throw new Error("test page never finished loading: " + url + " " + JSON.stringify({ state, hits, frames: page.frames().map((f) => f.url()) }));
 }
@@ -136,7 +146,7 @@ async function loadTestPage(page, url) {
 async function frameTitle(page, url) {
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
     const title = frame && await frame.evaluate(() => document.title).catch(() => "");
     if (title) return title;
     await page.waitForTimeout(100);
@@ -145,40 +155,156 @@ async function frameTitle(page, url) {
 }
 
 const tests = {
-  async "front page: revision app, only the special sign-in opens the browser"(browser) {
+  async "proxied address opened on its own shows the revision page; from a link it opens"(browser) {
+    const real = "http://127.0.0.1:" + site.address().port + "/whoami";
+    const proxied = BASE + codec.prefix + codec.encode(real);
+    const context = await browser.newContext();
+    await openApp(context); // installs the service worker
+    const page = await context.newPage();
+    await page.goto(proxied); // typed / pasted / bookmarked: no referrer
+    await page.waitForURL(BASE + "/");
+    assert.match(await page.title(), /Recall/);
+    await page.goto(proxied, { referer: BASE + codec.prefix + codec.encode("http://127.0.0.1:1/") }); // like "Open in new tab"
+    await page.waitForFunction(() => document.title && !/Recall/.test(document.title), null, { timeout: 15000 });
+    assert.equal(await page.title(), "no cookies");
+    await context.close();
+  },
+
+  async "disguised addresses: no proxied request shows the real site"(browser) {
+    const host = "127.0.0.1:" + site.address().port;
+    const url = "http://" + host + "/page-disguise";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const seen = [];
+    context.on("request", (req) => seen.push(req.url()));
+    await loadTestPage(page, url);
+    const proxied = seen.filter((u) => new URL(u).pathname.startsWith(codec.prefix));
+    assert.ok(proxied.length >= 5, "page and its scripts went through the proxy (" + proxied.length + ")");
+    for (const u of proxied) {
+      const path = new URL(u).pathname;
+      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "disguised: " + path);
+      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "page-disguise", "scramjet"]) {
+        assert.ok(!u.includes(leak), "address leaks " + leak + ": " + u);
+      }
+    }
+    // The address bar shows the disguised address too, and it can be typed back in.
+    const shown = await page.inputValue("#address");
+    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "address bar: " + shown);
+    assert.ok(!shown.includes("127.0.0.1") && !shown.includes("page-disguise"), "address bar leaks: " + shown);
+    assert.equal(await page.evaluate((text) => window.Engine.toUrl(text), shown), url);
+    await context.close();
+    for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
+  },
+
+  async "front page: accounts on the server; signing in opens the browser"(browser) {
     const context = await browser.newSignedOutContext();
     const page = await context.newPage();
     await page.goto(BASE + "/app");
     await page.waitForURL(BASE + "/");
     assert.match(await page.title(), /Recall/, "/app without signing in shows the revision app");
-    // A normal account works and stays in the revision app.
+    const name = "student" + Date.now();
     await page.click("#open-signup");
-    await page.fill("#auth-user", "student1");
-    await page.fill("#auth-pass", "revision1");
-    await page.click("#auth-submit");
-    await page.waitForSelector("#who:not([hidden])");
-    await page.click(".deck");
-    await page.click("#study");
-    await page.click("#flashcard");
-    assert.equal(await page.textContent("#card-side"), "Answer");
-    await page.click("#stop-study");
-    await page.click("#back");
-    await page.click("#signout");
-    // Wrong password for the special account: stays put.
-    await page.click("#open-signin");
-    await page.fill("#auth-user", "proxy");
-    await page.fill("#auth-pass", "1234");
-    await page.click("#auth-submit");
-    await page.waitForSelector("#auth-error:not([hidden])");
-    assert.equal(new URL(page.url()).pathname, "/");
-    // The special sign-in opens the browser.
-    await page.fill("#auth-user", "proxy");
-    await page.fill("#auth-pass", "12345");
+    await page.fill("#auth-user", name);
+    await page.fill("#auth-pass", "revision-pass-1");
     await page.click("#auth-submit");
     await page.waitForURL(BASE + "/app");
     await page.waitForSelector("#address");
+    // Sign out from the account dialog, then a wrong password is refused.
+    await page.click("#account-chip");
+    await page.click("#sign-out");
+    await page.waitForURL(BASE + "/", { waitUntil: "commit" });
+    await page.waitForSelector("#open-signin:not([hidden])");
+    await page.click("#open-signin");
+    await page.fill("#auth-user", name);
+    await page.fill("#auth-pass", "wrong-password");
+    await page.click("#auth-submit");
+    await page.waitForSelector("#auth-error:not([hidden])");
+    assert.equal(new URL(page.url()).pathname, "/");
+    await page.fill("#auth-pass", "revision-pass-1");
+    await page.click("#auth-submit");
+    await page.waitForURL(BASE + "/app");
+    // The old shared login no longer opens anything.
+    const res = await fetch(BASE + "/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "proxy", password: "12345" }) });
+    assert.equal(res.status, 401);
     await context.close();
   },
+
+  async "data: usage is metered, and pages stop at zero with a top-up banner"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/big";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const before = (await (await page.request.get(BASE + "/api/me")).json()).user;
+    await go(page, url);
+    await frameTitle(page, url);
+    await page.waitForTimeout(3500); // usage is charged every 3 s
+    const after = (await (await page.request.get(BASE + "/api/me")).json()).user;
+    assert.ok(after.usedBytes - before.usedBytes >= 2_000_000, "charged " + (after.usedBytes - before.usedBytes) + " bytes for a 2 MB page");
+    assert.equal(before.balanceBytes - after.balanceBytes, after.usedBytes - before.usedBytes);
+    // Use up the balance: the proxy refuses, and the banner offers a top-up.
+    await fetch(BASE + "/api/admin/credit", { method: "POST", headers: { "Content-Type": "application/json", "x-admin-password": accounts.ADMIN_PASSWORD },
+      body: JSON.stringify({ username: context.username, gb: -1000 }) });
+    await page.evaluate(() => window.OrbitAccount.refresh());
+    await page.waitForSelector("#out-of-data:not([hidden])");
+    const ws = await page.evaluate((u) => new Promise((resolve) => {
+      const socket = new WebSocket(u);
+      socket.onopen = () => resolve("open");
+      socket.onerror = () => resolve("refused");
+    }), BASE.replace("http", "ws") + "/wisp/");
+    assert.equal(ws, "refused");
+    await context.close();
+  },
+
+  async "data: redeeming a code adds data, once"(browser) {
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const code = await accounts.adminCode(BASE, 2);
+    await page.click("#account-chip");
+    await page.fill("#redeem-code", code.toLowerCase());
+    await page.click("#redeem-form .primary");
+    await page.waitForSelector("#redeem-result.ok");
+    assert.match(await page.textContent("#redeem-result"), /Added 2\.00 GB\. You now have 10[12]\.\d+ GB/);
+    await page.fill("#redeem-code", code);
+    await page.click("#redeem-form .primary");
+    await page.waitForSelector("#redeem-result.error");
+    assert.match(await page.textContent("#redeem-result"), /already been used/);
+    await context.close();
+  },
+
+  async "saved sign-ins: survive a service worker restart and follow the account to another device"(browser) {
+    const real = "http://127.0.0.1:" + site.address().port;
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await go(page, real + "/setcookie");
+    assert.equal(await frameTitle(page, real + "/setcookie"), "set");
+    await page.waitForTimeout(1500); // the worker saves the jar ~1 s after a change
+    // The browser stops idle service workers; sign-ins must come back.
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("ServiceWorker.enable");
+    await cdp.send("ServiceWorker.stopAllWorkers");
+    await page.waitForTimeout(500);
+    await go(page, real + "/whoami");
+    assert.match(await frameTitle(page, real + "/whoami"), /login=yes/);
+    await page.evaluate(() => window.OrbitAccount.push());
+    // Another device: a new browser profile signed in to the same account.
+    const login = await fetch(BASE + "/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: context.username, password: "test-password-1" }) });
+    const cookie = /orbit_session=([^;]+)/.exec(login.headers.get("set-cookie"))[1];
+    const other = await browser.newSignedOutContext();
+    await other.addCookies([{ name: "orbit_session", value: cookie, url: BASE }]);
+    const page2 = await openApp(other);
+    await go(page2, real + "/whoami");
+    assert.match(await frameTitle(page2, real + "/whoami"), /login=yes/);
+    // A different account on that device must not see them.
+    await other.clearCookies();
+    const stranger = await accounts.createAccount(BASE);
+    await other.addCookies([{ name: "orbit_session", value: stranger.cookie, url: BASE }]);
+    const page3 = await openApp(other);
+    await go(page3, real + "/whoami?again");
+    assert.equal(await frameTitle(page3, real + "/whoami?again"), "no cookies");
+    await context.close();
+    await other.close();
+  },
+
 
   async "bring in a sign-in: imported cookies reach the site"(browser) {
     const url = "http://127.0.0.1:" + site.address().port + "/whoami";
@@ -206,7 +332,7 @@ const tests = {
     const deadline = Date.now() + 20000;
     let title;
     while (Date.now() < deadline) {
-      const frame = page.frames().find((f) => f.url().includes(encodeURIComponent(url)));
+      const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
       title = frame && await frame.evaluate(() => document.title).catch(() => "");
       if (title) break;
       await page.waitForTimeout(100);
@@ -260,7 +386,7 @@ const tests = {
     // Make the next tab load skip the worker, as Safari sometimes does.
     await cdp.send("Network.setBypassServiceWorker", { bypass: true });
     page.on("response", (res) => {
-      if (res.url().includes("/scramjet/") && res.status() === 503) {
+      if (res.url().includes(codec.prefix) && res.status() === 503) {
         cdp.send("Network.setBypassServiceWorker", { bypass: false }).catch(() => {});
       }
     });
@@ -281,7 +407,7 @@ const tests = {
       const frame = document.createElement("iframe");
       frame.src = url;
       document.body.append(frame);
-    }, "/scramjet/" + encodeURIComponent(TARGET));
+    }, codec.prefix + codec.encode(TARGET));
     await reloaded;
     await context.close();
   },
@@ -304,24 +430,11 @@ const tests = {
 };
 
 
-// The proxy browser (/app) is behind the front page's sign-in; start signed in.
-function signedIn(browser) {
-  const newContext = browser.newContext.bind(browser);
-  browser.newSignedOutContext = newContext;
-  browser.newContext = async (options) => {
-    const context = await newContext(options);
-    await context.addInitScript(() => {
-      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
-    });
-    return context;
-  };
-  return browser;
-}
 
 (async () => {
   const server = await startServer();
   await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
-  const browser = signedIn(await chromium.launch());
+  const browser = accounts.signedIn(await chromium.launch(), () => "http://localhost:" + PORT);
   let failed = 0;
   try {
     for (const [name, run] of Object.entries(tests)) {
