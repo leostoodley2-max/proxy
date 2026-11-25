@@ -15,6 +15,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 const { WebSocketServer } = require("ws");
 const { chromium } = require("playwright");
+const accounts = require("./support/accounts.js");
 const codec = require("../public/codec.js");
 
 const PROXY_PORT = 19500 + Math.floor(Math.random() * 400);
@@ -335,7 +336,7 @@ function site(otherOrigin) {
 
 function startProxy() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1" },
+    env: { ...process.env, PORT: String(PROXY_PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve) => child.stdout.on("data", (c) => String(c).includes("Proxy running") && resolve(child)));
@@ -352,18 +353,6 @@ async function results(frameOrPage) {
 }
 
 
-// The proxy browser (/app) is behind the front page's sign-in; start signed in.
-function signedIn(browser) {
-  const newContext = browser.newContext.bind(browser);
-  browser.newContext = async (options) => {
-    const context = await newContext(options);
-    await context.addInitScript(() => {
-      try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
-    });
-    return context;
-  };
-  return browser;
-}
 
 (async () => {
   const wss = await wsServer();
@@ -371,7 +360,7 @@ function signedIn(browser) {
   const main = await site("http://127.0.0.1:" + other.address().port);
   const pageUrl = "http://127.0.0.1:" + main.address().port + "/page";
   const proxy = await startProxy();
-  const browser = signedIn(await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }));
+  const browser = accounts.signedIn(await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required"] }), () => "http://localhost:" + PROXY_PORT);
   let regressions = 0;
   try {
     // Direct (control): served cross-origin isolated like the proxy would be.

@@ -19,6 +19,7 @@ const { baremuxPath } = require("@mercuryworkshop/bare-mux/node");
 const { libcurlPath } = require("@mercuryworkshop/libcurl-transport");
 const { startWarp, stopWarp, getRoute, getEgress } = require("./warp");
 const { makeTCPSocket } = require("./wisp-socks");
+const { createAccounts } = require("./accounts");
 
 const PORT = parseInt(process.env.PORT, 10) || 8080;
 const warpEnabled = process.env.WARP?.toLowerCase() !== "off";
@@ -35,6 +36,9 @@ Object.assign(wisp.options, {
 
 const app = express();
 app.disable("x-powered-by");
+// Render terminates HTTPS in front of the app: trust its X-Forwarded-* headers
+// (client IP for rate limits, https for secure cookies).
+app.set("trust proxy", 1);
 app.use(compression());
 
 // Scramjet needs a cross-origin isolated top page (SharedArrayBuffer).
@@ -94,6 +98,24 @@ function precompressed(mount, dir, options) {
   };
 }
 
+// Accounts, data balances, top-up codes, saved sign-ins (see accounts.js).
+const accounts = createAccounts();
+app.use("/api", accounts.router);
+
+// Pages that need a signed-in account: anyone else gets the front page.
+const signedInPage = (file) => (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (!accounts.userFromRequest(req)) return res.redirect(302, "/");
+  res.sendFile(path.join(__dirname, "public", file));
+};
+app.get("/app", signedInPage("browser.html"));
+app.get(["/diagnostics.html", "/diagnostics"], signedInPage("diagnostics.html"));
+app.get(["/admin", "/admin.html"], (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.sendFile(path.join(__dirname, "public", "admin.html"));
+});
+app.get("/browser.html", (req, res) => res.redirect(302, "/app"));
+
 // The service worker must never be cached, or updates get stuck.
 app.get("/sw.js", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
@@ -137,12 +159,6 @@ app.use("/study/", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "engine-wait.html"));
 });
 
-// The proxy browser itself (the front page at / signs in to it).
-app.get("/app", (req, res) => {
-  res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(__dirname, "public", "browser.html"));
-});
-
 // Any other unknown path loads the front page instead of a bare 404.
 app.use((req, res) => {
   res.status(404).sendFile(path.join(__dirname, "public", "index.html"));
@@ -152,8 +168,10 @@ const server = http.createServer(app);
 const TCPSocket = warpEnabled ? makeTCPSocket(getRoute, wisp.options) : undefined;
 
 server.on("upgrade", (req, socket, head) => {
-  if (req.url.endsWith("/wisp/")) wisp.routeRequest(req, socket, head, { TCPSocket });
-  else socket.end();
+  if (!req.url.endsWith("/wisp/")) return socket.end();
+  // Only signed-in accounts with data left may proxy; their traffic is metered.
+  if (!accounts.admitWisp(req, socket)) return;
+  wisp.routeRequest(req, socket, head, { TCPSocket });
 });
 
 // Render's load balancer drops idle connections after ~60s; keep sockets alive

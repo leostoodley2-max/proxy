@@ -51,6 +51,48 @@ self.addEventListener("message", (event) => {
   event.waitUntil(loadErrors().then((errors) => event.source && event.source.postMessage({ type: "orbit-diagnostics", errors })));
 });
 
+// --- Cookie jar persistence -------------------------------------------------
+// Scramjet keeps cookies in memory and only saved the ones pages set from
+// script; cookies sites set in responses (most sign-ins) were lost whenever
+// the browser stopped this worker. Save the jar shortly after any change.
+const jarDb = () => new Promise((resolve, reject) => {
+  const req = indexedDB.open("$scramjet");
+  req.onsuccess = () => resolve(req.result);
+  req.onerror = () => reject(req.error);
+});
+async function saveJar() {
+  const db = await jarDb();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction("cookies", "readwrite");
+    tx.objectStore("cookies").put(JSON.parse(scramjet.cookieStore.dump()), "cookies");
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  db.close();
+}
+async function reloadJar() {
+  const db = await jarDb();
+  const jar = await new Promise((resolve, reject) => {
+    const req = db.transaction("cookies").objectStore("cookies").get("cookies");
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  db.close();
+  scramjet.cookieStore.load(jar || {});
+}
+let saveTimer = null;
+const setCookies = scramjet.cookieStore.setCookies.bind(scramjet.cookieStore);
+scramjet.cookieStore.setCookies = (list, url) => {
+  setCookies(list, url);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => saveJar().catch((e) => console.warn("[orbit] couldn't save cookies", e)), 1000);
+};
+// The browser page asks for this after syncing sign-ins from the account.
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "orbit-reload-cookies") return;
+  event.waitUntil(reloadJar().then(() => event.source && event.source.postMessage({ type: "orbit-cookies-reloaded" })));
+});
+
 // Retry requests that fail in transit (dropped tunnel, connection reset, TLS
 // hiccup on the way out through WARP) instead of showing Scramjet's error
 // page. Only for requests that are safe to repeat: GET/HEAD without a body.

@@ -11,6 +11,7 @@
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const { chromium } = require("playwright");
+const accounts = require("./support/accounts.js");
 const codec = require("../public/codec.js");
 
 const [url, seconds = "40", shot = "realsite.png"] = process.argv.slice(2);
@@ -19,7 +20,7 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
 
 (async () => {
   const server = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_SERVER_FETCH: serverFetch ? "1" : "0" },
+    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_SERVER_FETCH: serverFetch ? "1" : "0", ...accounts.serverEnv() },
     stdio: ["ignore", "pipe", "pipe"],
   });
   server.stderr.on("data", (d) => process.stderr.write("[server] " + d));
@@ -28,7 +29,6 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
   const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   await context.addInitScript((test) => {
-    try { if (window === window.top) localStorage.setItem("orbit.unlocked", "1"); } catch (e) {}
     if (test) window.__orbitTestTransport = "/__test/transport.mjs";
   }, serverFetch);
   if (process.env.LOG_MESSAGES) {
@@ -40,6 +40,8 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
       }, true);
     }, process.env.LOG_MESSAGES === "long" ? 8000 : 160);
   }
+  const { cookie } = await accounts.createAccount("http://localhost:" + PORT);
+  await context.addCookies([{ name: "orbit_session", value: cookie, url: "http://localhost:" + PORT }]);
   const seen = new Set();
   const log = (kind, text) => {
     const key = kind + text.slice(0, 200);

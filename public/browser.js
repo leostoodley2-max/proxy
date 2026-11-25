@@ -498,6 +498,8 @@
     try {
       if (!window.Engine?.ready) throw new Error("The browser engine could not be loaded.");
       await window.Engine.ready;
+      // Saved sign-ins are synced from the account before any tab loads.
+      if (window.OrbitAccount) await window.OrbitAccount.ready;
       ready = true;
       tabs.forEach(startPending);
       updateControls();

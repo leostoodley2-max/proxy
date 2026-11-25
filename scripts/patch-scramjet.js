@@ -69,6 +69,12 @@
 //    then loads under two addresses, so it runs twice with separate state
 //    (CrazyGames' gameframe: "[GameConfig] is not set", game never starts).
 //    Fix: when such an element is inserted, add the marker if it's missing.
+//
+// 12. Cookie jar restore: CookieStore.load() returns without loading when
+//    given an object, which is exactly what IndexedDB hands back. So every
+//    time the browser restarted the idle service worker (~30 s), all cookies
+//    were forgotten and sites signed you out. Fix: load objects too.
+//    (sw.js also saves cookies set by responses, which Scramjet never stored.)
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -236,6 +242,15 @@ const patches = [
       `if(src&&src.startsWith(location.origin+"/")&&!/[?&]type=module(&|$)/.test(src))` +
       `${c}.natives.call("Element.prototype.setAttribute",a,"src",src+(src.includes("?")?"&":"?")+"type=module")}}}),`,
     fixed: /\/\* __orbitModuleSrc \*\//,
+  },
+  {
+    name: "cookie jar restore",
+    files: ["scramjet.all.js"],
+    impact: "sites sign you out whenever the service worker restarts",
+    // load(e){if("object"==typeof e)return e;this.cookies=JSON.parse(e)}
+    buggy: /load\((\w+)\)\{if\("object"==typeof \1\)return \1;this\.cookies=JSON\.parse\(\1\)\}/g,
+    replace: (_, a) => `load(${a}){if("object"==typeof ${a}){this.cookies=${a}||{};return}this.cookies=JSON.parse(${a})}`,
+    fixed: /load\((\w+)\)\{if\("object"==typeof \1\)\{this\.cookies=\1\|\|\{\};return\}/,
   },
   {
     name: "location.ancestorOrigins",

@@ -11,14 +11,6 @@
     // Only the app's own tabs count: embedding the whole app in another frame
     // (e.g. an about:blank wrapper) is fine.
     (function () {
-      // Only reachable after signing in on the front page (index.html).
-      try {
-        if (localStorage.getItem("orbit.unlocked") !== "1") {
-          window.stop();
-          location.replace("/");
-          return;
-        }
-      } catch (e) {}
       var inOwnTab = false;
       try { inOwnTab = window.parent !== window && !!window.parent.Engine; } catch (e) {}
       if (inOwnTab) {
@@ -32,6 +24,7 @@
   <script src="/baremux/index.js"></script>
   <script src="/codec.js"></script>
   <script src="/engine.js"></script>
+  <script src="/account.js" defer></script>
   <script src="/browser.js" defer></script>
   <script src="/signin-import.js" defer></script>
 </head>
@@ -77,8 +70,10 @@
         <svg class="icon"><use href="#i-globe"/></svg>
         <input id="address" aria-label="Address" placeholder="Search or enter a URL" autocomplete="off" spellcheck="false">
       </form>
+      <button id="account-chip" class="account-chip" type="button" aria-label="Data left and account">…</button>
     </div>
   </header>
+  <button id="out-of-data" class="out-of-data" type="button" hidden>You've run out of data, so pages won't load. Tap here to top up.</button>
   <div id="banner" role="alert" hidden></div>
   <main id="pages">
     <div id="home" role="tabpanel" aria-label="New Tab">
@@ -101,6 +96,29 @@
       </div>
     </div>
   </main>
+  <dialog id="account-dialog" class="account-dialog" aria-labelledby="account-heading">
+    <h2 id="account-heading">Your data</h2>
+    <p class="account-summary"><span id="account-name"></span>: <strong id="account-left"></strong> left · <span id="account-used"></span></p>
+    <div class="plans">
+      <div class="plan">
+        <h3>Monthly plan</h3>
+        <p class="price">£1.99 / month</p>
+        <p>10 GB every month, paid by card.</p>
+        <button type="button" disabled>Coming soon</button>
+      </div>
+      <div class="plan">
+        <h3>Pay with cash</h3>
+        <p class="price">25p per GB</p>
+        <p>Pay the owner in cash and they'll give you a code. Enter it here:</p>
+        <form id="redeem-form" class="redeem">
+          <input id="redeem-code" required placeholder="STUDY-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" aria-label="Top-up code">
+          <button class="primary">Redeem</button>
+        </form>
+        <p id="redeem-result" role="status" hidden></p>
+      </div>
+    </div>
+    <div class="dialog-actions"><button type="button" id="sign-out">Sign out</button><button type="button" id="close-account" class="primary">Done</button></div>
+  </dialog>
   <dialog id="import-dialog" class="import-dialog" aria-labelledby="import-heading">
     <form id="import-form">
       <h2 id="import-heading">Bring in a sign-in</h2>
