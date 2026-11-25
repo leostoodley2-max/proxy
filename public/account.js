@@ -15,7 +15,7 @@
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
-    if (res.status === 401) { location.replace("/"); throw new Error("Signed out."); }
+    if (res.status === 401) { if (!leaving) location.replace("/"); throw new Error("Signed out."); }
     if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
     return data;
   }
@@ -50,7 +50,7 @@
     });
   }
 
-  let me = null, lastPushed = null;
+  let me = null, lastPushed = null, leaving = false;
   const versionKey = () => "orbit.jarVersion:" + me.username.toLowerCase();
   // Bring this device's jar up to date with the account (before tabs load).
   async function pull() {
@@ -112,6 +112,7 @@
   $("out-of-data").addEventListener("click", () => $("account-chip").click());
   $("close-account").addEventListener("click", () => $("account-dialog").close());
   $("sign-out").addEventListener("click", async () => {
+    leaving = true;
     await push().catch(() => {});
     await api("logout", "POST", {}).catch(() => {});
     location.replace("/");

@@ -212,7 +212,8 @@ const tests = {
     // Sign out from the account dialog, then a wrong password is refused.
     await page.click("#account-chip");
     await page.click("#sign-out");
-    await page.waitForURL(BASE + "/");
+    await page.waitForURL(BASE + "/", { waitUntil: "commit" });
+    await page.waitForSelector("#open-signin:not([hidden])");
     await page.click("#open-signin");
     await page.fill("#auth-user", name);
     await page.fill("#auth-pass", "wrong-password");
