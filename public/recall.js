@@ -1,10 +1,15 @@
 // Recall: a small flashcard and focus-timer app. Accounts and decks live in
 // this browser's localStorage (passwords are stored only as salted PBKDF2
-// hashes). One special sign-in opens the web browser at /app instead.
+// hashes) and are for revision only. One special sign-in opens the web
+// browser at /app instead, which then asks for a (paid) browser account.
 "use strict";
 
 (() => {
   const $ = (id) => document.getElementById(id);
+  const ACCOUNTS = "recall.accounts.v1";
+  const CURRENT = "recall.current.v1";
+  // SHA-256 of "<username>:<password>" for the sign-in that opens /app.
+  const BROWSER_KEY = "de28b315be7a7f934354a091ef77a2263965b0870eddfa02f413d7a7ba20ab67";
 
   const read = (key, fallback) => {
     try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
@@ -15,29 +20,43 @@
   const id = () => Math.random().toString(36).slice(2, 10);
 
   // ---- Accounts ------------------------------------------------------------
-  // Accounts live on the server, so they work on any device. Signing in (or
-  // creating an account) opens the study workspace at /app.
-  const normal = (name) => name.trim().toLowerCase();
-  let user = null;
-
-  async function api(path, body) {
-    const res = await fetch("/api/" + path, body === undefined ? { cache: "no-store" } : {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
-    return data;
+  const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  const sha256 = async (text) => hex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  async function passwordHash(password, salt) {
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+    const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: 120000 }, key, 256);
+    return hex(bits);
   }
+  const normal = (name) => name.trim().toLowerCase();
+  let user = read(CURRENT, null);
+
   async function signIn(name, password) {
-    await api("login", { username: name.trim(), password });
-    location.href = "/app";
+    if ((await sha256(normal(name) + ":" + password)) === BROWSER_KEY) {
+      // Opens the web browser's own sign-in (its paid accounts live on the server).
+      document.cookie = "orbit_gate=1; Path=/; Max-Age=31536000; SameSite=Lax" + (location.protocol === "https:" ? "; Secure" : "");
+      location.href = "/app";
+      return null;
+    }
+    const account = read(ACCOUNTS, {})[normal(name)];
+    if (!account || (await passwordHash(password, account.salt)) !== account.hash) return "Wrong username or password.";
+    setUser(account.name);
+    return null;
   }
   async function signUp(name, password) {
-    await api("signup", { username: name.trim(), password });
-    location.href = "/app";
+    const key = normal(name);
+    if (!/^[a-z0-9_.-]{3,40}$/.test(key)) return "Usernames are 3–40 letters, numbers, dots, dashes or underscores.";
+    if (!password) return "Enter a password.";
+    const accounts = read(ACCOUNTS, {});
+    if (accounts[key] || key === "proxy") return "That username is taken.";
+    const salt = id() + id();
+    accounts[key] = { name: name.trim(), salt, hash: await passwordHash(password, salt) };
+    write(ACCOUNTS, accounts);
+    setUser(name.trim());
+    return null;
   }
   function setUser(name) {
     user = name;
+    write(CURRENT, name);
     load();
   }
 
@@ -71,7 +90,7 @@
     document.querySelector(".layout").hidden = view !== "hero";
   }
   function renderAccount() {
-    $("who").hidden = $("signout").hidden = $("open-app").hidden = !user;
+    $("who").hidden = $("signout").hidden = !user;
     $("open-signin").hidden = $("open-signup").hidden = !!user;
     $("who").textContent = user ? "Signed in as " + user : "";
     const today = new Date().toDateString();
@@ -204,8 +223,16 @@
     const submit = $("auth-submit");
     submit.disabled = true;
     try {
-      if (mode === "signin") await signIn($("auth-user").value, $("auth-pass").value);
-      else await signUp($("auth-user").value, $("auth-pass").value);
+      if (!window.crypto || !crypto.subtle) throw new Error("Accounts need a secure (https) connection.");
+      const error = mode === "signin"
+        ? await signIn($("auth-user").value, $("auth-pass").value)
+        : await signUp($("auth-user").value, $("auth-pass").value);
+      if (error) {
+        $("auth-error").textContent = error;
+        $("auth-error").hidden = false;
+      } else {
+        $("auth").close();
+      }
     } catch (e) {
       $("auth-error").textContent = e.message;
       $("auth-error").hidden = false;
@@ -213,12 +240,7 @@
       submit.disabled = false;
     }
   });
-  $("signout").addEventListener("click", async () => {
-    await api("logout", {}).catch(() => {});
-    user = null;
-    load();
-  });
-  $("open-app").addEventListener("click", () => { location.href = "/app"; });
+  $("signout").addEventListener("click", () => { user = null; write(CURRENT, null); load(); });
 
   $("new-deck").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -265,6 +287,4 @@
 
   load();
   paintTimer();
-  // Already signed in on this device? Show it.
-  api("me").then((data) => setUser(data.user.username)).catch(() => {});
 })();
