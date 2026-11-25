@@ -108,13 +108,21 @@ const signedInPage = (file) => (req, res) => {
   if (!accounts.userFromRequest(req)) return res.redirect(302, "/");
   res.sendFile(path.join(__dirname, "public", file));
 };
-app.get("/app", signedInPage("browser.html"));
+// /app: the browser for signed-in browser accounts; after the front page's
+// special login (gate cookie) but before signing in, the browser's own
+// sign-in page; anyone else just gets the revision front page.
+app.get("/app", (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (accounts.userFromRequest(req)) return res.sendFile(path.join(__dirname, "public", "browser.html"));
+  if (/(?:^|;\s*)orbit_gate=1(?:;|$)/.test(req.headers.cookie || "")) return res.sendFile(path.join(__dirname, "public", "signin.html"));
+  res.redirect(302, "/");
+});
 app.get(["/diagnostics.html", "/diagnostics"], signedInPage("diagnostics.html"));
 app.get(["/admin", "/admin.html"], (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.sendFile(path.join(__dirname, "public", "admin.html"));
 });
-app.get("/browser.html", (req, res) => res.redirect(302, "/app"));
+app.get(["/browser.html", "/signin.html"], (req, res) => res.redirect(302, "/app"));
 
 // The service worker must never be cached, or updates get stuck.
 app.get("/sw.js", (req, res) => {

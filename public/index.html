@@ -20,7 +20,6 @@
       <span id="who" class="who" hidden></span>
       <button id="open-signin" class="ghost" type="button">Sign in</button>
       <button id="open-signup" class="solid" type="button">Create account</button>
-      <button id="open-app" class="solid" type="button" hidden>Open workspace</button>
       <button id="signout" class="ghost" type="button" hidden>Sign out</button>
     </nav>
   </header>
@@ -29,7 +28,7 @@
     <section class="hero" id="hero">
       <h1>Revise smarter, one card at a time.</h1>
       <p>Make flashcard decks for any subject, test yourself, and keep focused with a built-in study timer.
-        Sign in to open your study workspace from any device.</p>
+        Your decks are saved in this browser. Create an account to keep separate decks for each person who uses it.</p>
     </section>
 
     <div class="layout">
@@ -100,7 +99,7 @@
     <form id="auth-form" method="dialog">
       <h2 id="auth-title">Sign in</h2>
       <label>Username<input id="auth-user" autocomplete="username" required maxlength="40" spellcheck="false"></label>
-      <label>Password<input id="auth-pass" type="password" autocomplete="current-password" required maxlength="200"></label>
+      <label>Password<input id="auth-pass" type="password" autocomplete="current-password" required maxlength="100"></label>
       <p id="auth-error" class="error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button id="auth-cancel" class="ghost" type="button">Cancel</button>

@@ -207,7 +207,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     const username = String(req.body.username || "").trim();
     const password = String(req.body.password || "");
     if (!/^[A-Za-z0-9_.-]{3,40}$/.test(username)) return res.status(400).json({ error: "Usernames are 3–40 letters, numbers, dots, dashes or underscores." });
-    if (password.length < 8) return res.status(400).json({ error: "Use at least 8 characters for your password." });
+    if (!password) return res.status(400).json({ error: "Enter a password." });
     if (q.userByName.get(username)) return res.status(409).json({ error: "That username is taken." });
     const { lastInsertRowid } = q.addUser.run(username, hashPassword(password), signupBytes, Date.now());
     startSession(res, Number(lastInsertRowid), secureCookie(req));

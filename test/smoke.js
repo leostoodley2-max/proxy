@@ -196,39 +196,62 @@ const tests = {
     for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
   },
 
-  async "front page: accounts on the server; signing in opens the browser"(browser) {
+  async "front page: revision accounts stay in Recall; only the special login reaches the browser"(browser) {
     const context = await browser.newSignedOutContext();
     const page = await context.newPage();
     await page.goto(BASE + "/app");
     await page.waitForURL(BASE + "/");
     assert.match(await page.title(), /Recall/, "/app without signing in shows the revision app");
-    const name = "student" + Date.now();
+    // A normal account (any password length) is a revision account only.
     await page.click("#open-signup");
-    await page.fill("#auth-user", name);
-    await page.fill("#auth-pass", "revision-pass-1");
+    await page.fill("#auth-user", "student1");
+    await page.fill("#auth-pass", "ab");
+    await page.click("#auth-submit");
+    await page.waitForSelector("#who:not([hidden])");
+    assert.equal(new URL(page.url()).pathname, "/");
+    await page.click(".deck");
+    await page.click("#study");
+    await page.click("#flashcard");
+    assert.equal(await page.textContent("#card-side"), "Answer");
+    await page.click("#stop-study");
+    await page.click("#back");
+    await page.click("#signout");
+    // The special login with a wrong password stays put.
+    await page.click("#open-signin");
+    await page.fill("#auth-user", "proxy");
+    await page.fill("#auth-pass", "1234");
+    await page.click("#auth-submit");
+    await page.waitForSelector("#auth-error:not([hidden])");
+    assert.equal(new URL(page.url()).pathname, "/");
+    // The special login opens the browser's own sign-in...
+    await page.fill("#auth-user", "proxy");
+    await page.fill("#auth-pass", "12345");
     await page.click("#auth-submit");
     await page.waitForURL(BASE + "/app");
+    await page.waitForSelector("#tab-signup");
+    // ...where a browser account (short password is fine) opens the browser.
+    const name = "browser" + Date.now();
+    await page.click("#tab-signup");
+    await page.fill("#user", name);
+    await page.fill("#pass", "x1");
+    await page.click("#submit");
     await page.waitForSelector("#address");
-    // Sign out from the account dialog, then a wrong password is refused.
+    // Signing out goes back to Recall; signing in again needs the browser sign-in.
     await page.click("#account-chip");
     await page.click("#sign-out");
     await page.waitForURL(BASE + "/", { waitUntil: "commit" });
-    await page.waitForSelector("#open-signin:not([hidden])");
-    await page.click("#open-signin");
-    await page.fill("#auth-user", name);
-    await page.fill("#auth-pass", "12345"); // short: the form must not block it, the server answers
-    await page.click("#auth-submit");
-    await page.waitForSelector("#auth-error:not([hidden])");
-    assert.match(await page.textContent("#auth-error"), /Wrong username or password/);
-    assert.equal(new URL(page.url()).pathname, "/");
-    await page.fill("#auth-pass", "revision-pass-1");
-    await page.click("#auth-submit");
-    await page.waitForURL(BASE + "/app");
-    // The old shared login no longer opens anything.
-    const res = await fetch(BASE + "/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "proxy", password: "12345" }) });
-    assert.equal(res.status, 401);
+    await page.goto(BASE + "/app");
+    await page.waitForSelector("#tab-signin");
+    await page.fill("#user", name);
+    await page.fill("#pass", "wrong");
+    await page.click("#submit");
+    await page.waitForSelector("#error:not([hidden])");
+    await page.fill("#pass", "x1");
+    await page.click("#submit");
+    await page.waitForSelector("#address");
     await context.close();
   },
+
 
   async "data: usage is metered, and pages stop at zero with a top-up banner"(browser) {
     const url = "http://127.0.0.1:" + site.address().port + "/big";

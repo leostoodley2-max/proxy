@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="robots" content="noindex">
+  <title>Orbit · Sign in</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: grid; place-items: center; background: radial-gradient(ellipse at 50% 120%, #3a1f3c 0%, #1a1a2e 60%); color: #e7e4f2; font: 15px/1.5 system-ui, sans-serif; padding: 20px; box-sizing: border-box; }
+    .card { width: min(380px, 100%); background: #22223a; border: 1px solid #3a3a58; border-radius: 18px; padding: 26px; box-shadow: 0 20px 60px #0006; }
+    h1 { margin: 0 0 4px; font-size: 24px; display: flex; align-items: center; gap: 10px; }
+    h1 svg { width: 30px; height: 30px; }
+    p.lead { margin: 0 0 18px; color: #aaa7bd; font-size: 14px; }
+    .tabs { display: grid; grid-template-columns: 1fr 1fr; background: #17172a; border-radius: 10px; padding: 3px; margin-bottom: 16px; }
+    .tabs button { border: 0; background: none; color: #aaa7bd; padding: 8px; border-radius: 8px; font: inherit; font-weight: 600; cursor: pointer; }
+    .tabs button[aria-selected="true"] { background: #33334f; color: #fff; }
+    label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: #c9c6da; margin-bottom: 12px; }
+    input { background: #14142a; color: inherit; border: 1px solid #3d3d5c; border-radius: 9px; padding: 10px 11px; font: inherit; }
+    input:focus-visible, button:focus-visible { outline: 2px solid #e88aac; outline-offset: 2px; }
+    .submit { width: 100%; border: 0; border-radius: 10px; padding: 11px; background: #a6324b; color: #fff; font: inherit; font-weight: 700; cursor: pointer; margin-top: 4px; }
+    .submit:disabled { opacity: .6; cursor: default; }
+    .error { color: #ff8a98; font-size: 14px; margin: 0 0 10px; }
+    .note { margin: 16px 0 0; font-size: 13px; color: #8f8ca3; text-align: center; }
+    .note a { color: #c9c6da; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1><svg viewBox="0 0 72 72" aria-hidden="true"><g transform="rotate(-32 36 36)"><circle cx="36" cy="36" r="20" fill="#ff7aa0"/><path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="#22223a" stroke-width="7"/><path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="#ff7aa0" stroke-width="3"/></g></svg>Orbit</h1>
+    <p class="lead">Sign in to your browser account. Your data balance and saved sign-ins are kept with it, on any device.</p>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" id="tab-signin" aria-selected="true">Sign in</button>
+      <button type="button" role="tab" id="tab-signup" aria-selected="false">Create account</button>
+    </div>
+    <form id="form">
+      <label>Username<input id="user" autocomplete="username" required maxlength="40" spellcheck="false" autocapitalize="off"></label>
+      <label>Password<input id="pass" type="password" autocomplete="current-password" required maxlength="200"></label>
+      <p id="error" class="error" role="alert" hidden></p>
+      <button id="submit" class="submit">Sign in</button>
+    </form>
+    <p class="note"><a href="/">Back to Recall</a></p>
+  </main>
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    let mode = "login";
+    function setMode(next) {
+      mode = next;
+      $("tab-signin").setAttribute("aria-selected", next === "login");
+      $("tab-signup").setAttribute("aria-selected", next === "signup");
+      $("submit").textContent = next === "login" ? "Sign in" : "Create account";
+      $("pass").autocomplete = next === "login" ? "current-password" : "new-password";
+      $("error").hidden = true;
+    }
+    $("tab-signin").addEventListener("click", () => setMode("login"));
+    $("tab-signup").addEventListener("click", () => setMode("signup"));
+    $("form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("submit").disabled = true;
+      try {
+        const res = await fetch("/api/" + mode, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: $("user").value.trim(), password: $("pass").value }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Something went wrong. Try again.");
+        location.replace("/app");
+      } catch (error) {
+        $("error").textContent = error.message;
+        $("error").hidden = false;
+      } finally {
+        $("submit").disabled = false;
+      }
+    });
+    $("user").focus();
+  </script>
+</body>
+</html>
