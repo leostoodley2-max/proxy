@@ -58,7 +58,17 @@ function open(dataDir) {
       version INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    -- Data used per account per day (UTC), for the admin page.
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      day TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      PRIMARY KEY (user_id, day)
+    );
   `);
+  // Columns added after the first release.
+  const columns = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
+  if (!columns.includes("last_active")) db.exec("ALTER TABLE users ADD COLUMN last_active INTEGER");
   return db;
 }
 
@@ -120,13 +130,19 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     session: db.prepare("SELECT users.* FROM sessions JOIN users ON users.id = sessions.user_id WHERE token_hash = ? AND expires_at > ?"),
     dropSession: db.prepare("DELETE FROM sessions WHERE token_hash = ?"),
     dropExpired: db.prepare("DELETE FROM sessions WHERE expires_at <= ?"),
-    charge: db.prepare("UPDATE users SET balance_bytes = MAX(0, balance_bytes - ?), used_bytes = used_bytes + ? WHERE id = ?"),
+    charge: db.prepare("UPDATE users SET balance_bytes = MAX(0, balance_bytes - ?), used_bytes = used_bytes + ?, last_active = ? WHERE id = ?"),
+    logUsage: db.prepare("INSERT INTO usage_daily (user_id, day, bytes) VALUES (?, ?, ?) ON CONFLICT(user_id, day) DO UPDATE SET bytes = bytes + excluded.bytes"),
+    setBalance: db.prepare("UPDATE users SET balance_bytes = MAX(0, ?) WHERE id = ?"),
+    addBalance: db.prepare("UPDATE users SET balance_bytes = MAX(0, balance_bytes + ?) WHERE id = ?"),
     credit: db.prepare("UPDATE users SET balance_bytes = balance_bytes + ? WHERE id = ?"),
     addCode: db.prepare("INSERT INTO codes (code, bytes, note, created_at) VALUES (?, ?, ?, ?)"),
     claimCode: db.prepare("UPDATE codes SET redeemed_by = ?, redeemed_at = ? WHERE code = ? AND redeemed_by IS NULL"),
     code: db.prepare("SELECT * FROM codes WHERE code = ?"),
     codes: db.prepare("SELECT codes.*, users.username AS redeemed_by_name FROM codes LEFT JOIN users ON users.id = codes.redeemed_by ORDER BY created_at DESC LIMIT 200"),
-    users: db.prepare("SELECT id, username, balance_bytes, used_bytes, created_at FROM users ORDER BY created_at DESC LIMIT 500"),
+    users: db.prepare(`SELECT u.id, u.username, u.balance_bytes, u.used_bytes, u.created_at, u.last_active,
+        COALESCE((SELECT bytes FROM usage_daily WHERE user_id = u.id AND day = ?), 0) AS used_today,
+        COALESCE((SELECT SUM(bytes) FROM usage_daily WHERE user_id = u.id AND day >= ?), 0) AS used_30d
+      FROM users u ORDER BY COALESCE(u.last_active, u.created_at) DESC LIMIT 2000`),
     jar: db.prepare("SELECT jar, version FROM cookie_jars WHERE user_id = ?"),
     putJar: db.prepare("INSERT INTO cookie_jars (user_id, jar, version, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET jar = excluded.jar, version = version + 1, updated_at = excluded.updated_at"),
   };
@@ -158,7 +174,8 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
       const delta = total - m.counted;
       if (delta > 0) {
         m.counted = total;
-        q.charge.run(delta, delta, m.userId);
+        q.charge.run(delta, delta, Date.now(), m.userId);
+        q.logUsage.run(m.userId, new Date().toISOString().slice(0, 10), delta);
       }
       const user = q.userById.get(m.userId);
       if (!user || user.balance_bytes <= 0) m.socket.destroy();
@@ -277,7 +294,26 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
   });
   router.get("/admin/overview", requireAdmin, (req, res) => {
     chargeAll();
-    res.json({ codes: q.codes.all(), users: q.users.all() });
+    const day = (offset) => new Date(Date.now() - offset * 86400_000).toISOString().slice(0, 10);
+    const users = q.users.all(day(0), day(29));
+    const sum = (key) => users.reduce((total, u) => total + u[key], 0);
+    res.json({
+      codes: q.codes.all(), users,
+      totals: { users: users.length, balanceBytes: sum("balance_bytes"), usedBytes: sum("used_bytes"), usedToday: sum("used_today"), used30d: sum("used_30d") },
+    });
+  });
+  // Change one account's data: add, remove or set it to an exact amount (GB).
+  router.post("/admin/balance", requireAdmin, (req, res) => {
+    const user = q.userByName.get(String(req.body.username || ""));
+    if (!user) return res.status(404).json({ error: "No such user." });
+    const bytes = Math.round(Number(req.body.gb) * GB);
+    if (!Number.isFinite(bytes) || bytes < 0) return res.status(400).json({ error: "Enter an amount of GB (0 or more)." });
+    if (req.body.action === "add") q.addBalance.run(bytes, user.id);
+    else if (req.body.action === "remove") q.addBalance.run(-bytes, user.id);
+    else if (req.body.action === "set") q.setBalance.run(bytes, user.id);
+    else return res.status(400).json({ error: "Unknown action." });
+    chargeAll(); // closes their connections if they're now at zero
+    res.json({ user: publicUser(q.userById.get(user.id)) });
   });
   router.post("/admin/credit", requireAdmin, (req, res) => {
     const user = q.userByName.get(String(req.body.username || ""));

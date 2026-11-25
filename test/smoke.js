@@ -278,6 +278,50 @@ const tests = {
     await context.close();
   },
 
+  async "admin: see every account's usage; add, remove and set their data"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/big";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await go(page, url);
+    await frameTitle(page, url);
+    await page.waitForTimeout(3500); // usage is charged every 3 s
+    const admin = await context.newPage();
+    await admin.goto(BASE + "/admin");
+    await admin.fill("#password", accounts.ADMIN_PASSWORD);
+    await admin.click("#login button");
+    await admin.waitForSelector("#panel:not([hidden])");
+    await admin.fill("#search", context.username);
+    const row = admin.locator("#users tr", { hasText: context.username });
+    assert.equal(await row.count(), 1);
+    const cells = await row.locator("td").allTextContents();
+    const bytes = (text) => parseFloat(text) * (/GB/.test(text) ? 1e9 : 1e6);
+    assert.ok(bytes(cells[2]) >= 2e6, "used today shows the 2 MB page: " + cells[2]);
+    assert.ok(bytes(cells[3]) >= bytes(cells[2]) && bytes(cells[4]) >= bytes(cells[3]), "30 days and all-time include today: " + cells.slice(2, 5));
+    assert.match(await admin.textContent("#totals"), /accounts/);
+    const balance = async () => (await (await page.request.get(BASE + "/api/me")).json()).user.balanceBytes / 1e9;
+    const start = await balance();
+    const act = async (label, gb) => {
+      await admin.evaluate(() => { document.getElementById("users-result").textContent = ""; });
+      await row.locator("input").fill(String(gb));
+      await row.getByRole("button", { name: label, exact: true }).click();
+      await admin.waitForFunction((name) => document.getElementById("users-result").textContent.startsWith(name), context.username, { timeout: 8000 })
+        .catch(async () => { throw new Error(label + " " + gb + ": result was " + JSON.stringify(await admin.textContent("#users-result"))); });
+    };
+    await act("Add", 2);
+    assert.ok(Math.abs(await balance() - (start + 2)) < 0.01, "added 2 GB");
+    await act("Remove", 0.5);
+    assert.ok(Math.abs(await balance() - (start + 1.5)) < 0.01, "removed 0.5 GB");
+    await act("Set to", 7);
+    assert.equal(await balance(), 7);
+    await act("Set to", 0);
+    assert.equal(await balance(), 0);
+    assert.match(await row.locator("td").nth(1).textContent(), /^0\.0 MB$/);
+    // At zero their browsing stops.
+    await page.evaluate(() => window.OrbitAccount.refresh());
+    await page.waitForSelector("#out-of-data:not([hidden])");
+    await context.close();
+  },
+
   async "data: redeeming a code adds data, once"(browser) {
     const context = await browser.newContext();
     const page = await openApp(context);
