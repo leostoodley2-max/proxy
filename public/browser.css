@@ -123,3 +123,6 @@ dialog input:focus { border-color: #df7087; }
 .redeem input { flex: 1; min-width: 0; background: #11111f; color: inherit; border: 1px solid #48485e; border-radius: 8px; padding: 8px; font: 13px ui-monospace, monospace; }
 .redeem .primary { padding: 8px 12px; border-radius: 8px; background: #a6324b; }
 #redeem-result.ok { color: #7fd1a0; } #redeem-result.error { color: #ff7b8a; }
+.why-paid { margin: -6px 0 14px; font-size: 13px; color: #c9c7d6; }
+.why-paid summary { cursor: pointer; color: #f0a8c0; font-weight: 600; }
+.why-paid p { margin: 6px 0 0; line-height: 1.5; }

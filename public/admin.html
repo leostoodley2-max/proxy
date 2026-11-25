@@ -7,32 +7,53 @@
   <title>Admin</title>
   <style>
     html { background: #16161f; color: #e4e2ee; font: 15px/1.5 system-ui, sans-serif; }
-    body { max-width: 980px; margin: 0 auto; padding: 24px 18px 60px; }
-    h1 { font-size: 22px; margin: 0 0 16px; } h2 { font-size: 17px; margin: 28px 0 10px; }
-    section, form { background: #20202c; border: 1px solid #34344a; border-radius: 12px; padding: 16px; }
+    body { max-width: 1180px; margin: 0 auto; padding: 24px 18px 60px; }
+    h1 { font-size: 22px; margin: 0 0 16px; } h2 { font-size: 17px; margin: 28px 0 10px; display: flex; align-items: center; gap: 12px; }
+    section, form.box { background: #20202c; border: 1px solid #34344a; border-radius: 12px; padding: 16px; }
     label { display: inline-grid; gap: 4px; margin: 0 12px 10px 0; font-size: 13px; color: #b5b2c6; }
     input { background: #11111a; color: inherit; border: 1px solid #3d3d55; border-radius: 8px; padding: 8px 10px; font: inherit; }
     button { background: #a6324b; color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
     button.secondary { background: #34344a; }
+    button.small { padding: 5px 10px; font-size: 13px; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
-    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #2c2c3e; }
-    th { color: #9d9ab0; font-weight: 600; }
-    code { font: 14px ui-monospace, monospace; background: #11111a; padding: 2px 6px; border-radius: 5px; }
+    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #2c2c3e; vertical-align: middle; }
+    th { color: #9d9ab0; font-weight: 600; white-space: nowrap; }
+    td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .stat { background: #20202c; border: 1px solid #34344a; border-radius: 12px; padding: 12px 14px; }
+    .stat b { display: block; font-size: 22px; }
+    .stat span { color: #9d9ab0; font-size: 13px; }
+    .actions { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+    .actions input { width: 70px; padding: 5px 7px; }
+    .zero { color: #ff8a98; font-weight: 600; }
+    .flash { animation: flash 1.2s; } @keyframes flash { from { background: #2f5d50; } }
     .new-codes { margin-top: 12px; font: 16px ui-monospace, monospace; white-space: pre-wrap; }
     .error { color: #ff7b8a; } .muted { color: #8f8ca3; }
+    .scroll { overflow-x: auto; }
   </style>
 </head>
 <body>
   <h1>Admin</h1>
-  <form id="login">
+  <form id="login" class="box">
     <label>Admin password<input id="password" type="password" autocomplete="current-password" required></label>
     <button>Open</button>
     <p id="login-error" class="error" hidden></p>
   </form>
 
   <div id="panel" hidden>
+    <div class="totals" id="totals"></div>
+
+    <h2>Accounts <input id="search" type="search" placeholder="Search usernames" aria-label="Search usernames">
+      <button class="secondary small" type="button" id="reload">Refresh</button></h2>
+    <section class="scroll">
+      <p class="muted" style="margin-top:0">Type an amount in GB, then Add, Remove or Set their data to exactly that amount.
+        Usage counts everything they load through the browser (both directions).</p>
+      <table id="users"></table>
+      <p id="users-result" class="muted"></p>
+    </section>
+
     <h2>Make top-up codes</h2>
-    <form id="make">
+    <form id="make" class="box">
       <label>GB per code<input id="gb" type="number" min="0.1" max="1000" step="0.1" value="4" required></label>
       <label>How many codes<input id="count" type="number" min="1" max="50" value="1" required></label>
       <label>Note (who / what for)<input id="note" maxlength="100" placeholder="e.g. Sam, £1 cash"></label>
@@ -41,19 +62,8 @@
       <div id="new-codes" class="new-codes"></div>
     </form>
 
-    <h2>Give data to a user</h2>
-    <form id="credit">
-      <label>Username<input id="credit-user" required></label>
-      <label>GB to add (negative removes)<input id="credit-gb" type="number" step="0.1" required></label>
-      <button>Add</button>
-      <span id="credit-result"></span>
-    </form>
-
-    <h2>Users <button class="secondary" type="button" id="reload">Refresh</button></h2>
-    <section><table id="users"></table></section>
-
     <h2>Codes</h2>
-    <section><table id="codes"></table></section>
+    <section class="scroll"><table id="codes"></table></section>
   </div>
 
   <script>
@@ -61,8 +71,11 @@
     const $ = (id) => document.getElementById(id);
     const GB = 1e9;
     const gb = (b) => (b / GB).toFixed(2);
-    const when = (t) => t ? new Date(t).toLocaleString() : "";
+    // Amounts under 1 GB in MB, so light usage doesn't show as 0.00 GB.
+    const size = (b) => Math.abs(b) >= GB ? (b / GB).toFixed(2) + " GB" : (b / 1e6).toFixed(1) + " MB";
+    const when = (t) => t ? new Date(t).toLocaleString() : "never";
     let password = sessionStorage.getItem("orbit.admin") || "";
+    let users = [];
 
     async function api(path, body) {
       const res = await fetch("/api/admin/" + path, {
@@ -74,21 +87,89 @@
       if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
       return data;
     }
-    function table(el, head, rows) {
-      el.replaceChildren();
-      const tr = el.insertRow();
-      for (const h of head) { const th = document.createElement("th"); th.textContent = h; tr.append(th); }
-      for (const row of rows) {
-        const r = el.insertRow();
-        for (const cell of row) r.insertCell().textContent = cell;
+    function cell(row, text, className) {
+      const td = row.insertCell();
+      td.textContent = text;
+      if (className) td.className = className;
+      return td;
+    }
+    function header(table, names) {
+      const tr = table.insertRow();
+      for (const name of names) { const th = document.createElement("th"); th.textContent = name; tr.append(th); }
+    }
+
+    function renderTotals(t) {
+      const stats = [
+        [t.users, "accounts"], [size(t.balanceBytes), "data left (all accounts)"],
+        [size(t.usedToday), "used today"], [size(t.used30d), "used in the last 30 days"],
+        [size(t.usedBytes), "used in total"],
+      ];
+      $("totals").replaceChildren(...stats.map(([value, label]) => {
+        const div = document.createElement("div");
+        div.className = "stat";
+        const b = document.createElement("b"); b.textContent = value;
+        const span = document.createElement("span"); span.textContent = label;
+        div.append(b, span);
+        return div;
+      }));
+    }
+    function renderUsers(flashName) {
+      const table = $("users");
+      table.replaceChildren();
+      header(table, ["User", "Data left", "Used today", "Last 30 days", "All time", "Last active", "Joined", "Change data"]);
+      const filter = $("search").value.trim().toLowerCase();
+      for (const u of users.filter((u) => u.username.toLowerCase().includes(filter))) {
+        const row = table.insertRow();
+        if (u.username === flashName) row.className = "flash";
+        cell(row, u.username);
+        cell(row, size(u.balance_bytes), "num" + (u.balance_bytes <= 0 ? " zero" : ""));
+        cell(row, size(u.used_today), "num");
+        cell(row, size(u.used_30d), "num");
+        cell(row, size(u.used_bytes), "num");
+        cell(row, when(u.last_active));
+        cell(row, when(u.created_at));
+        const actions = row.insertCell();
+        actions.className = "actions";
+        const amount = document.createElement("input");
+        Object.assign(amount, { type: "number", min: "0", step: "0.1", placeholder: "GB" });
+        amount.setAttribute("aria-label", "GB for " + u.username);
+        actions.append(amount);
+        for (const [action, label] of [["add", "Add"], ["remove", "Remove"], ["set", "Set to"]]) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "small" + (action === "add" ? "" : " secondary");
+          button.textContent = label;
+          button.addEventListener("click", () => change(u.username, action, amount.value));
+          actions.append(button);
+        }
+      }
+      if (!table.rows[1]) cell(table.insertRow(), filter ? "No accounts match." : "No accounts yet.");
+    }
+    async function change(username, action, value) {
+      if (value === "" || !(Number(value) >= 0)) { $("users-result").textContent = "Type an amount in GB first."; return; }
+      try {
+        const data = await api("balance", { username, action, gb: Number(value) });
+        await load(username); // redraw first, so nothing typed meanwhile is wiped
+        $("users-result").textContent = data.user.username + " now has " + size(data.user.balanceBytes) + ".";
+      } catch (e) { $("users-result").textContent = e.message; }
+    }
+    function renderCodes(codes) {
+      const table = $("codes");
+      table.replaceChildren();
+      header(table, ["Code", "GB", "Note", "Made", "Used by", "Used"]);
+      for (const c of codes) {
+        const row = table.insertRow();
+        cell(row, c.code); cell(row, gb(c.bytes), "num"); cell(row, c.note || ""); cell(row, when(c.created_at));
+        cell(row, c.redeemed_by_name || (c.redeemed_at ? "(deleted account)" : "not used"));
+        cell(row, c.redeemed_at ? when(c.redeemed_at) : "");
       }
     }
-    async function load() {
+    async function load(flashName) {
       const data = await api("overview");
-      table($("users"), ["User", "Data left", "Used", "Joined"],
-        data.users.map((u) => [u.username, gb(u.balance_bytes) + " GB", gb(u.used_bytes) + " GB", when(u.created_at)]));
-      table($("codes"), ["Code", "GB", "Note", "Made", "Used by", "Used"],
-        data.codes.map((c) => [c.code, gb(c.bytes), c.note || "", when(c.created_at), c.redeemed_by_name || (c.redeemed_at ? "(deleted user)" : "not used"), when(c.redeemed_at)]));
+      users = data.users;
+      renderTotals(data.totals);
+      renderUsers(flashName);
+      renderCodes(data.codes);
     }
     async function open() {
       try {
@@ -115,17 +196,10 @@
         load();
       } catch (err) { $("new-codes").textContent = err.message; }
     });
-    $("credit").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      try {
-        const data = await api("credit", { username: $("credit-user").value, gb: Number($("credit-gb").value) });
-        $("credit-result").textContent = data.user.username + " now has " + gb(data.user.balanceBytes) + " GB.";
-        load();
-      } catch (err) { $("credit-result").textContent = err.message; }
-    });
+    $("search").addEventListener("input", () => renderUsers());
     $("gb").addEventListener("input", updateCharge);
     $("count").addEventListener("input", updateCharge);
-    $("reload").addEventListener("click", load);
+    $("reload").addEventListener("click", () => load());
     updateCharge();
     if (password) open();
   </script>
