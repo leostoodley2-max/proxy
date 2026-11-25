@@ -22,6 +22,9 @@
     .submit { width: 100%; border: 0; border-radius: 10px; padding: 11px; background: #a6324b; color: #fff; font: inherit; font-weight: 700; cursor: pointer; margin-top: 4px; }
     .submit:disabled { opacity: .6; cursor: default; }
     .error { color: #ff8a98; font-size: 14px; margin: 0 0 10px; }
+    .why { margin: -6px 0 16px; font-size: 13px; color: #aaa7bd; }
+    .why summary { cursor: pointer; color: #e7a3bd; font-weight: 600; }
+    .why p { margin: 8px 0 0; line-height: 1.5; }
     .note { margin: 16px 0 0; font-size: 13px; color: #8f8ca3; text-align: center; }
     .note a { color: #c9c6da; }
   </style>
@@ -30,6 +33,10 @@
   <main class="card">
     <h1><svg viewBox="0 0 72 72" aria-hidden="true"><g transform="rotate(-32 36 36)"><circle cx="36" cy="36" r="20" fill="#ff7aa0"/><path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="#22223a" stroke-width="7"/><path d="M17 29C-4 31-4 44 36 44s40-13 19-15" fill="none" stroke="#ff7aa0" stroke-width="3"/></g></svg>Orbit</h1>
     <p class="lead">Sign in to your browser account. Your data balance and saved sign-ins are kept with it, on any device.</p>
+    <details class="why">
+      <summary>Why isn't it free any more?</summary>
+      <p>Every page, video and game you open goes through our server, and the hosting company charges for all of that data. So many people used it that the free allowance ran out and the browser went offline. Charging for data pays for that, plus the server itself, so it can stay online. You only pay for what you use, and unused data never expires.</p>
+    </details>
     <div class="tabs" role="tablist">
       <button type="button" role="tab" id="tab-signin" aria-selected="true">Sign in</button>
       <button type="button" role="tab" id="tab-signup" aria-selected="false">Create account</button>
