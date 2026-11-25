@@ -207,15 +207,16 @@ const tests = {
     assert.ok(proxied.length >= 5, "page and its scripts went through the proxy (" + proxied.length + ")");
     for (const u of proxied) {
       const path = new URL(u).pathname;
-      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "disguised: " + path);
-      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "page-disguise", "scramjet"]) {
+      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+\.%2F/, "disguised: " + path);
+      // The site (host) is hidden; the path stays percent-encoded (sites need it, see codec.js).
+      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "scramjet"]) {
         assert.ok(!u.includes(leak), "address leaks " + leak + ": " + u);
       }
     }
     // The address bar shows the disguised address too, and it can be typed back in.
     const shown = await page.inputValue("#address");
-    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "address bar: " + shown);
-    assert.ok(!shown.includes("127.0.0.1") && !shown.includes("page-disguise"), "address bar leaks: " + shown);
+    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+\.%2F/, "address bar: " + shown);
+    assert.ok(!shown.includes("127.0.0.1"), "address bar leaks the site: " + shown);
     assert.equal(await page.evaluate((text) => window.Engine.toUrl(text), shown), url);
     await context.close();
     for (const key in hits) delete hits[key]; // the asset cache test counts these from zero

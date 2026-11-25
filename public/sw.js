@@ -141,7 +141,7 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 // response for as long as the site itself allows, following the same rules
 // as the browser's own cache. Bump the version whenever Scramjet or its
 // settings change, since that changes the rewritten output.
-const ASSET_CACHE = "orbit-assets-v2"; // v2: disguised addresses (codec.js)
+const ASSET_CACHE = "orbit-assets-v3"; // v3: site-only disguise (codec.js)
 // "" is fetch()/XMLHttpRequest: game engines (Unity, Godot...) load their
 // large .wasm/.data files that way.
 const CACHEABLE = new Set(["script", "style", "font", "image", "worker", "sharedworker", ""]);
