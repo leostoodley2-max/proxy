@@ -190,6 +190,10 @@
     $("auth-submit").textContent = which === "signin" ? "Sign in" : "Create account";
     $("auth-switch").textContent = which === "signin" ? "No account? Create one" : "Already have an account? Sign in";
     $("auth-pass").autocomplete = which === "signin" ? "current-password" : "new-password";
+    // Only new passwords need 8+ characters; signing in accepts whatever the account has.
+    if (which === "signup") $("auth-pass").minLength = 8;
+    else $("auth-pass").removeAttribute("minlength");
+    $("auth-pass").placeholder = which === "signup" ? "At least 8 characters" : "";
     $("auth-error").hidden = true;
     $("auth-form").reset();
     $("auth").showModal();

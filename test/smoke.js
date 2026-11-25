@@ -216,9 +216,10 @@ const tests = {
     await page.waitForSelector("#open-signin:not([hidden])");
     await page.click("#open-signin");
     await page.fill("#auth-user", name);
-    await page.fill("#auth-pass", "wrong-password");
+    await page.fill("#auth-pass", "12345"); // short: the form must not block it, the server answers
     await page.click("#auth-submit");
     await page.waitForSelector("#auth-error:not([hidden])");
+    assert.match(await page.textContent("#auth-error"), /Wrong username or password/);
     assert.equal(new URL(page.url()).pathname, "/");
     await page.fill("#auth-pass", "revision-pass-1");
     await page.click("#auth-submit");
