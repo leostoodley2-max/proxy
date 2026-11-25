@@ -24,9 +24,34 @@ const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = "http://localhost:" + PORT;
 const TARGET = "https://example.com/";
 
+// A stand-in for Stripe's API: records calls and answers like Stripe does.
+const crypto = require("node:crypto");
+const STRIPE_WEBHOOK_SECRET = "whsec_test_secret";
+const stripeCalls = [];
+const stripeFake = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    stripeCalls.push({ path: req.url, auth: req.headers.authorization, params: Object.fromEntries(new URLSearchParams(body)) });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: "cs_test_1", url: BASE + "/fake-checkout" }));
+    if (req.url === "/v1/billing_portal/sessions") return res.end(JSON.stringify({ id: "bps_1", url: BASE + "/fake-portal" }));
+    res.end("{}");
+  });
+});
+// Sends a webhook event signed the way Stripe signs them.
+async function stripeEvent(event, secret = STRIPE_WEBHOOK_SECRET) {
+  const body = JSON.stringify(event);
+  const t = Math.floor(Date.now() / 1000);
+  const v1 = crypto.createHmac("sha256", secret).update(t + "." + body).digest("hex");
+  return fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "Content-Type": "application/json", "Stripe-Signature": "t=" + t + ",v1=" + v1 }, body });
+}
+
 function startServer() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
+    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv({
+      STRIPE_SECRET_KEY: "sk_test_fake", STRIPE_WEBHOOK_SECRET, STRIPE_API_BASE: "http://127.0.0.1:" + stripeFake.address().port,
+    }) },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve, reject) => {
@@ -322,6 +347,59 @@ const tests = {
     await context.close();
   },
 
+  async "monthly plan: Stripe checkout, 10 GB per paid month, signed webhooks only, manage and cancel"(browser) {
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const me = async () => (await (await page.request.get(BASE + "/api/me")).json()).user;
+    const start = await me();
+    await page.click("#account-chip");
+    assert.equal(await page.textContent("#plan-action"), "Subscribe");
+    await page.click("#plan-action");
+    await page.waitForURL(BASE + "/fake-checkout");
+    const checkout = stripeCalls.find((c) => c.path === "/v1/checkout/sessions");
+    assert.equal(checkout.auth, "Bearer sk_test_fake");
+    assert.equal(checkout.params.mode, "subscription");
+    assert.equal(checkout.params["line_items[0][price_data][unit_amount]"], "199");
+    assert.equal(checkout.params["line_items[0][price_data][currency]"], "gbp");
+    assert.equal(checkout.params["line_items[0][price_data][recurring][interval]"], "month");
+    assert.match(checkout.params.success_url, /\/app\?subscribed=1$/);
+    const userId = checkout.params.client_reference_id;
+    assert.equal(checkout.params["subscription_data[metadata][user_id]"], userId);
+    // Stripe confirms the checkout and the first payment.
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
+    assert.equal((await stripeEvent({ id: "evt_1", type: "checkout.session.completed", data: { object: { client_reference_id: userId, customer: "cus_1", subscription: "sub_1" } } })).status, 200);
+    const firstInvoice = { id: "evt_2", type: "invoice.paid", data: { object: { id: "in_1", customer: "cus_1", amount_paid: 199,
+      parent: { subscription_details: { subscription: "sub_1", metadata: { user_id: userId } } }, lines: { data: [{ period: { end: periodEnd } }] } } } };
+    await stripeEvent(firstInvoice);
+    let now = await me();
+    assert.equal(now.balanceBytes - start.balanceBytes, 10e9, "first month adds 10 GB");
+    assert.equal(now.subscriptionStatus, "active");
+    // The same event again (Stripe retries) adds nothing; a forged one is refused.
+    await stripeEvent(firstInvoice);
+    assert.equal((await me()).balanceBytes, now.balanceBytes, "no double credit");
+    const forged = await stripeEvent({ ...firstInvoice, id: "evt_forged" }, "whsec_wrong");
+    assert.equal(forged.status, 400);
+    assert.equal((await me()).balanceBytes, now.balanceBytes, "forged event ignored");
+    // Next month's renewal (no metadata: found by subscription) adds another 10 GB.
+    await stripeEvent({ id: "evt_3", type: "invoice.paid", data: { object: { id: "in_2", customer: "cus_1", subscription: "sub_1", amount_paid: 199, lines: { data: [{ period: { end: periodEnd + 30 * 86400 } }] } } } });
+    assert.equal((await me()).balanceBytes - now.balanceBytes, 10e9, "renewal adds 10 GB");
+    // Back from checkout: thanks banner; the plan can be managed through Stripe's portal.
+    await page.goto(BASE + "/app?subscribed=1");
+    await page.waitForSelector("#subscribed-banner:not([hidden])");
+    await page.click("#account-chip");
+    await page.waitForFunction(() => document.getElementById("plan-action").textContent === "Manage or cancel");
+    assert.match(await page.textContent("#plan-status"), /Active/);
+    await page.click("#plan-action");
+    await page.waitForURL(BASE + "/fake-portal");
+    assert.equal(stripeCalls.find((c) => c.path === "/v1/billing_portal/sessions").params.customer, "cus_1");
+    // Cancelled in the portal: Stripe says so, and the account shows it.
+    await stripeEvent({ id: "evt_4", type: "customer.subscription.deleted", data: { object: { id: "sub_1", customer: "cus_1", status: "canceled" } } });
+    assert.equal((await me()).subscriptionStatus, "canceled");
+    const overview = await (await fetch(BASE + "/api/admin/overview", { headers: { "x-admin-password": accounts.ADMIN_PASSWORD } })).json();
+    assert.equal(overview.users.find((u) => String(u.id) === userId).subscription_status, "canceled");
+    await context.close();
+  },
+
   async "data: redeeming a code adds data, once"(browser) {
     const context = await browser.newContext();
     const page = await openApp(context);
@@ -500,6 +578,7 @@ const tests = {
 
 
 (async () => {
+  await new Promise((resolve) => stripeFake.listen(0, "127.0.0.1", resolve));
   const server = await startServer();
   await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
   const browser = accounts.signedIn(await chromium.launch(), () => "http://localhost:" + PORT);
@@ -517,6 +596,7 @@ const tests = {
   } finally {
     await browser.close();
     server.kill();
+    stripeFake.close();
     site.close();
   }
   if (failed) {

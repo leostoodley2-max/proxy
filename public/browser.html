@@ -73,6 +73,7 @@
       <button id="account-chip" class="account-chip" type="button" aria-label="Data left and account">…</button>
     </div>
   </header>
+  <div id="subscribed-banner" class="subscribed-banner" role="status" hidden>Thanks for subscribing! Your bigger daily allowance starts in a moment.</div>
   <button id="out-of-data" class="out-of-data" type="button" hidden>You've run out of data, so pages won't load. Tap here to top up.</button>
   <div id="banner" role="alert" hidden></div>
   <main id="pages">
@@ -107,8 +108,9 @@
       <div class="plan">
         <h3>Monthly plan</h3>
         <p class="price">£1.99 / month</p>
-        <p>10 GB every month, paid by card.</p>
-        <button type="button" disabled>Coming soon</button>
+        <p id="plan-status">A bigger daily allowance, paid by card. Cancel any time.</p>
+        <button type="button" id="plan-action" disabled>Coming soon</button>
+        <p id="plan-result" role="status" hidden></p>
       </div>
       <div class="plan">
         <h3>Pay with cash</h3>
