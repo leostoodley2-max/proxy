@@ -180,11 +180,24 @@
     out.hidden = false;
   });
 
+  // Data saver (see datasaver.js): on unless turned off on this device.
+  function sendDataSaver() {
+    const on = localStorage.getItem("orbit.dataSaver") !== "0";
+    $("data-saver").checked = on;
+    const worker = navigator.serviceWorker.controller;
+    if (worker) worker.postMessage({ type: "orbit-data-saver", on });
+  }
+  $("data-saver").addEventListener("change", () => {
+    localStorage.setItem("orbit.dataSaver", $("data-saver").checked ? "1" : "0");
+    sendDataSaver();
+  });
+
   window.OrbitAccount = {
     // Resolves once the account is known and sign-ins are synced; tabs wait for it.
     ready: (async () => {
       await refresh();
       await window.Engine.ready;
+      sendDataSaver();
       await pull().catch((e) => console.warn("[orbit] couldn't sync saved sign-ins", e));
       setInterval(() => push().catch(() => {}), 15000);
       addEventListener("pagehide", () => { push(true).catch(() => {}); });

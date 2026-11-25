@@ -401,6 +401,30 @@ const tests = {
     await context.close();
   },
 
+  async "data saver: ad servers are answered empty without downloading; the switch turns it off"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/page-saver";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await loadTestPage(page, url);
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
+    const probe = () => frame.evaluate(async () => {
+      const r = await fetch("https://googleads.g.doubleclick.net/pagead/id?orbit-test=" + Math.random());
+      return r.status;
+    });
+    assert.equal(await probe(), 204, "blocked by the data saver (on by default)");
+    assert.equal(await page.isChecked("#data-saver"), true);
+    // Off: the request goes out (and fails here, as this sandbox has no internet).
+    await page.click("#account-chip");
+    await page.uncheck("#data-saver");
+    await page.waitForTimeout(300);
+    assert.notEqual(await probe(), 204, "not blocked when the data saver is off");
+    await page.check("#data-saver");
+    await page.waitForTimeout(300);
+    assert.equal(await probe(), 204, "blocked again");
+    await context.close();
+    for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
+  },
+
   async "data: redeeming a code adds data, once"(browser) {
     const context = await browser.newContext();
     const page = await openApp(context);

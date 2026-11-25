@@ -129,3 +129,5 @@ dialog input:focus { border-color: #df7087; }
 .subscribed-banner { padding: 9px 14px; background: #2f5d50; color: #fff; font-weight: 600; }
 #plan-action:not([disabled]) { padding: 8px 12px; border-radius: 8px; background: #a6324b; cursor: pointer; }
 #plan-result.error { color: #ff7b8a; font-size: 13px; margin: 8px 0 0; }
+.data-saver { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 14px; padding: 10px 12px; border: 1px solid #2f5d50; border-radius: 10px; background: #1b2b2a; font-size: 13px; line-height: 1.45; cursor: pointer; }
+.data-saver input { margin-top: 3px; accent-color: #4fb08a; }
