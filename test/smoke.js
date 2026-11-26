@@ -321,8 +321,9 @@ const tests = {
     assert.equal(await row.count(), 1);
     const cells = await row.locator("td").allTextContents();
     const bytes = (text) => parseFloat(text) * (/GB/.test(text) ? 1e9 : 1e6);
-    assert.ok(bytes(cells[2]) >= 2e6, "used today shows the 2 MB page: " + cells[2]);
-    assert.ok(bytes(cells[3]) >= bytes(cells[2]) && bytes(cells[4]) >= bytes(cells[3]), "30 days and all-time include today: " + cells.slice(2, 5));
+    // Columns: User, Plan, Extra data, Used today, Last 30 days, All time, ...
+    assert.ok(bytes(cells[3]) >= 2e6, "used today shows the 2 MB page: " + cells[3]);
+    assert.ok(bytes(cells[4]) >= bytes(cells[3]) && bytes(cells[5]) >= bytes(cells[4]), "30 days and all-time include today: " + cells.slice(3, 6));
     assert.match(await admin.textContent("#totals"), /accounts/);
     const balance = async () => (await (await page.request.get(BASE + "/api/me")).json()).user.balanceBytes / 1e9;
     const start = await balance();
@@ -341,14 +342,14 @@ const tests = {
     assert.equal(await balance(), 7);
     await act("Set to", 0);
     assert.equal(await balance(), 0);
-    assert.match(await row.locator("td").nth(1).textContent(), /^0\.0 MB$/);
+    assert.match(await row.locator("td").nth(2).textContent(), /^0\.0 MB$/);
     // At zero their browsing stops.
     await page.evaluate(() => window.OrbitAccount.refresh());
     await page.waitForSelector("#out-of-data:not([hidden])");
     await context.close();
   },
 
-  async "monthly plan: Stripe checkout, 10 GB per paid month, signed webhooks only, manage and cancel"(browser) {
+  async "monthly plan: Stripe checkout makes the account paid per billing month; signed webhooks only; manage and cancel"(browser) {
     const context = await browser.newContext();
     const page = await openApp(context);
     const me = async () => (await (await page.request.get(BASE + "/api/me")).json()).user;
@@ -369,21 +370,23 @@ const tests = {
     // Stripe confirms the checkout and the first payment.
     const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
     assert.equal((await stripeEvent({ id: "evt_1", type: "checkout.session.completed", data: { object: { client_reference_id: userId, customer: "cus_1", subscription: "sub_1" } } })).status, 200);
+    const until = async () => (await me()).subscriptionUntil;
     const firstInvoice = { id: "evt_2", type: "invoice.paid", data: { object: { id: "in_1", customer: "cus_1", amount_paid: 199,
       parent: { subscription_details: { subscription: "sub_1", metadata: { user_id: userId } } }, lines: { data: [{ period: { end: periodEnd } }] } } } };
     await stripeEvent(firstInvoice);
     let now = await me();
-    assert.equal(now.balanceBytes - start.balanceBytes, 10e9, "first month adds 10 GB");
+    assert.equal(now.subscriptionUntil, periodEnd * 1000, "first month: paid until the period end");
+    assert.equal(now.paid, true);
     assert.equal(now.subscriptionStatus, "active");
     // The same event again (Stripe retries) adds nothing; a forged one is refused.
     await stripeEvent(firstInvoice);
-    assert.equal((await me()).balanceBytes, now.balanceBytes, "no double credit");
+    assert.equal(await until(), now.subscriptionUntil, "no double credit");
     const forged = await stripeEvent({ ...firstInvoice, id: "evt_forged" }, "whsec_wrong");
     assert.equal(forged.status, 400);
-    assert.equal((await me()).balanceBytes, now.balanceBytes, "forged event ignored");
+    assert.equal(await until(), now.subscriptionUntil, "forged event ignored");
     // Next month's renewal (no metadata: found by subscription) adds another 10 GB.
     await stripeEvent({ id: "evt_3", type: "invoice.paid", data: { object: { id: "in_2", customer: "cus_1", subscription: "sub_1", amount_paid: 199, lines: { data: [{ period: { end: periodEnd + 30 * 86400 } }] } } } });
-    assert.equal((await me()).balanceBytes - now.balanceBytes, 10e9, "renewal adds 10 GB");
+    assert.equal(await until(), (periodEnd + 30 * 86400) * 1000, "renewal extends the paid period");
     // Back from checkout: thanks banner; the plan can be managed through Stripe's portal.
     await page.goto(BASE + "/app?subscribed=1");
     await page.waitForSelector("#subscribed-banner:not([hidden])");
