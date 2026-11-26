@@ -12,7 +12,9 @@ const ADMIN_PASSWORD = "test-admin-password";
 function serverEnv(extra = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "orbit-test-db-"));
   process.on("exit", () => fs.rmSync(dataDir, { recursive: true, force: true }));
-  return { DATA_DIR: dataDir, SIGNUP_GB: "100", ADMIN_PASSWORD, NODE_NO_WARNINGS: "1", AUTH_ATTEMPTS_PER_MINUTE: "1000", ...extra };
+  return { DATA_DIR: dataDir, SIGNUP_GB: "100", ADMIN_PASSWORD, NODE_NO_WARNINGS: "1", AUTH_ATTEMPTS_PER_MINUTE: "1000",
+    // No free daily allowance, so balances behave predictably (tests opt in).
+    DAILY_FREE_GB: "0", ...extra };
 }
 
 let counter = 0;

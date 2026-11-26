@@ -106,10 +106,33 @@
     const empty = left <= 0;
     $("out-of-data").hidden = !empty;
   }
+  let planAvailable = false, planGb = 3;
+  const subscribed = () => ["active", "trialing", "past_due"].includes(me.subscriptionStatus);
+  function paintPlan() {
+    const button = $("plan-action");
+    if (!planAvailable) {
+      button.textContent = "Coming soon";
+      button.disabled = true;
+    } else if (subscribed()) {
+      const until = me.subscriptionUntil ? new Date(me.subscriptionUntil).toLocaleDateString() : "";
+      $("plan-status").textContent = me.subscriptionStatus === "past_due"
+        ? "Your last payment didn't go through. Update your card to keep your " + planGb + " GB a day."
+        : "Active: " + planGb + " GB a day" + (until ? ", paid until " + until : "") + ".";
+      button.textContent = "Manage or cancel";
+      button.disabled = false;
+    } else {
+      $("plan-status").textContent = planGb + " GB every day instead of the free allowance, paid by card. Cancel any time.";
+      button.textContent = "Subscribe";
+      button.disabled = false;
+    }
+  }
   async function refresh() {
     const data = await api("me");
     me = data.user;
+    planAvailable = !!(data.pricing && data.pricing.subscription && data.pricing.subscription.available);
+    if (data.pricing && data.pricing.subscription && data.pricing.subscription.dailyGb) planGb = data.pricing.subscription.dailyGb;
     paint();
+    paintPlan();
   }
 
   $("account-chip").addEventListener("click", () => {
@@ -117,6 +140,22 @@
     $("account-dialog").showModal();
   });
   $("out-of-data").addEventListener("click", () => $("account-chip").click());
+  // Subscribe opens Stripe's checkout; subscribers get Stripe's page to manage or cancel.
+  $("plan-action").addEventListener("click", async () => {
+    const button = $("plan-action"), out = $("plan-result");
+    button.disabled = true;
+    out.hidden = true;
+    try {
+      const data = await api(subscribed() ? "stripe/portal" : "stripe/checkout", "POST", {});
+      await push().catch(() => {});
+      location.href = data.url;
+    } catch (error) {
+      out.textContent = error.message;
+      out.className = "error";
+      out.hidden = false;
+      button.disabled = false;
+    }
+  });
   $("close-account").addEventListener("click", () => $("account-dialog").close());
   $("sign-out").addEventListener("click", async () => {
     leaving = true;
@@ -141,15 +180,37 @@
     out.hidden = false;
   });
 
+  // Data saver (see datasaver.js): on unless turned off on this device.
+  function sendDataSaver() {
+    const on = localStorage.getItem("orbit.dataSaver") !== "0";
+    $("data-saver").checked = on;
+    const worker = navigator.serviceWorker.controller;
+    if (worker) worker.postMessage({ type: "orbit-data-saver", on });
+  }
+  $("data-saver").addEventListener("change", () => {
+    localStorage.setItem("orbit.dataSaver", $("data-saver").checked ? "1" : "0");
+    sendDataSaver();
+  });
+
   window.OrbitAccount = {
     // Resolves once the account is known and sign-ins are synced; tabs wait for it.
     ready: (async () => {
       await refresh();
       await window.Engine.ready;
+      sendDataSaver();
       await pull().catch((e) => console.warn("[orbit] couldn't sync saved sign-ins", e));
       setInterval(() => push().catch(() => {}), 15000);
       addEventListener("pagehide", () => { push(true).catch(() => {}); });
       setInterval(() => refresh().catch(() => {}), 20000);
+      // Back from Stripe's checkout: the data arrives once Stripe confirms the payment.
+      if (new URLSearchParams(location.search).get("subscribed") === "1") {
+        history.replaceState(null, "", "/app");
+        $("out-of-data").hidden = true;
+        const thanks = $("subscribed-banner");
+        thanks.hidden = false;
+        setTimeout(() => { thanks.hidden = true; }, 15000);
+        for (const wait of [3000, 8000, 15000]) setTimeout(() => refresh().catch(() => {}), wait);
+      }
     })(),
     refresh,
     push, // save sign-ins now (also used by tests)

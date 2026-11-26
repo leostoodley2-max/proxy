@@ -73,6 +73,7 @@
       <button id="account-chip" class="account-chip" type="button" aria-label="Data left and account">…</button>
     </div>
   </header>
+  <div id="subscribed-banner" class="subscribed-banner" role="status" hidden>Thanks for subscribing! Your bigger daily allowance starts in a moment.</div>
   <button id="out-of-data" class="out-of-data" type="button" hidden>You've run out of data, so pages won't load. Tap here to top up.</button>
   <div id="banner" role="alert" hidden></div>
   <main id="pages">
@@ -103,12 +104,16 @@
       <summary>Why isn't it free any more?</summary>
       <p>Every page, video and game you open goes through our server, and the hosting company charges for all of that data. So many people used it that the free allowance ran out and the browser went offline. Charging for data pays for that, plus the server itself, so it can stay online. You only pay for what you use, and unused data never expires.</p>
     </details>
+    <label class="data-saver"><input type="checkbox" id="data-saver" checked>
+      <span><b>Data saver</b> (recommended): blocks adverts, video ads and trackers before they download, so your data lasts much longer.
+      Turn off only if a site won't work.</span></label>
     <div class="plans">
       <div class="plan">
         <h3>Monthly plan</h3>
         <p class="price">£1.99 / month</p>
-        <p>10 GB every month, paid by card.</p>
-        <button type="button" disabled>Coming soon</button>
+        <p id="plan-status">A bigger daily allowance, paid by card. Cancel any time.</p>
+        <button type="button" id="plan-action" disabled>Coming soon</button>
+        <p id="plan-result" role="status" hidden></p>
       </div>
       <div class="plan">
         <h3>Pay with cash</h3>

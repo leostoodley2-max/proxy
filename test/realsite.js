@@ -28,6 +28,7 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
 
   const browser = await chromium.launch({ args: ["--autoplay-policy=no-user-gesture-required", "--enable-unsafe-swiftshader"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  if (process.env.SAVER_OFF) await context.addInitScript(() => { try { if (window === window.top) localStorage.setItem("orbit.dataSaver", "0"); } catch (e) {} });
   await context.addInitScript((test) => {
     if (test) window.__orbitTestTransport = "/__test/transport.mjs";
   }, serverFetch);
@@ -66,6 +67,13 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
     const realUrl = codec.decode(u.pathname.slice(codec.prefix.length));
     if (new RegExp(process.env.LIST_REQ).test(realUrl)) console.log("REQ       " + r.resourceType().padEnd(8) + " real=" + realUrl.slice(0, 100) + "  proxied-query=" + u.search);
   });
+  if (process.env.LOG_POST) context.on("request", (r) => {
+    const u = new URL(r.url());
+    if (!u.pathname.startsWith(codec.prefix)) return;
+    const realUrl = codec.decode(u.pathname.slice(codec.prefix.length));
+    if (!new RegExp(process.env.LOG_POST).test(realUrl)) return;
+    console.log("POST      " + realUrl.slice(0, 90) + " body=" + String(r.postData() || "").slice(0, 900));
+  });
   const page = await context.newPage();
   if (process.env.CDP_INIT) {
     const cdp = await context.newCDPSession(page);
@@ -103,6 +111,12 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
   // STEPS='[["fill","https://accounts.google.com","input[type=email]","x@example.com"],["click",...],["wait",5]]'
   for (const [action, framePrefix, selector, value] of JSON.parse(process.env.STEPS || "[]")) {
     if (action === "wait") { await page.waitForTimeout(Number(framePrefix) * 1000); continue; }
+    if (action === "nav") { // type an address into the proxy's address bar
+      await page.fill("#address", framePrefix);
+      await page.press("#address", "Enter");
+      console.log("STEP      nav " + framePrefix);
+      continue;
+    }
     const frame = page.frames().find((f) => real(f.url()).startsWith(framePrefix));
     if (!frame) { console.log("STEP      no frame " + framePrefix); continue; }
     try {
@@ -120,6 +134,12 @@ const serverFetch = process.env.SERVER_FETCH !== "0";
   if (process.env.EVAL) {
     const target = page.frames().find((f) => real(f.url()).startsWith(process.env.EVAL_FRAME || "zzz")) || page.frames().at(-1);
     console.log("EVAL      " + await target.evaluate(process.env.EVAL).catch((e) => "threw " + e.message));
+  }
+  if (serverFetch && process.env.BYTES) {
+    const bytes = await (await fetch("http://localhost:" + PORT + "/__test/bytes")).json();
+    const total = Object.values(bytes).reduce((a, b) => a + b, 0);
+    for (const [host, n] of Object.entries(bytes).sort((a, b) => b[1] - a[1]).slice(0, 15)) console.log("BYTES     " + (n / 1e6).toFixed(2).padStart(7) + " MB  " + host);
+    console.log("BYTES     " + (total / 1e6).toFixed(2).padStart(7) + " MB  TOTAL downloaded from sites");
   }
   await page.screenshot({ path: shot });
   console.log("screenshot: " + shot);

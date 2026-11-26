@@ -194,16 +194,21 @@ async function startWarp({ log = console } = {}) {
     const { host: warpHost, port: warpPort } = splitEndpoint(config.endpoint);
     const portsEnv = (process.env.WARP_ENDPOINT_PORTS || "").split(",").map(Number).filter(Boolean);
     const ports = [...new Set([warpPort, ...(portsEnv.length ? portsEnv : [2408, 500, 1701, 4500])])];
+    // The hostname can resolve to IPv6, which some hosts (e.g. Fly.io) won't
+    // route for UDP; Cloudflare's WARP IPv4 anycast addresses work there.
+    const hostsEnv = (process.env.WARP_ENDPOINT_HOSTS || "").split(",").map((h) => h.trim()).filter(Boolean);
+    const hosts = [...new Set([...(hostsEnv.length ? hostsEnv : []), warpHost, "162.159.192.1", "162.159.193.10"])];
+    const endpoints = hosts.flatMap((h) => ports.map((p) => h + ":" + p));
     let firstResult;
     const ready = new Promise(resolve => { firstResult = resolve; });
     async function supervise() {
       let verifiedOnce = false;
       let attempt = 0;        // which candidate port to try before the first success
-      let activePort = ports[0];
+      let activePort = endpoints[0];
       let backoff = 500;
       while (!lifetime.signal.aborted) {
-        if (!verifiedOnce) activePort = ports[attempt % ports.length];
-        fs.writeFileSync(file, wireConfig(config, route.socksPort, warpHost + ":" + activePort), { mode: 0o600 });
+        if (!verifiedOnce) activePort = endpoints[attempt % endpoints.length];
+        fs.writeFileSync(file, wireConfig(config, route.socksPort, activePort), { mode: 0o600 });
         const exited = new AbortController();
         child = launch(binary, file);
         // Surface recognizable OS diagnostics on failure. Raw child output
@@ -228,22 +233,27 @@ async function startWarp({ log = console } = {}) {
           egress = { warp: true, ip: result.ip, colo: result.colo };
           activeRoute = route;
           verifiedOnce = true;
-          log.info("[warp] Verified ip=" + result.ip + " colo=" + result.colo + " warp=" + result.status + " port=" + activePort);
+          log.info("[warp] Verified ip=" + result.ip + " colo=" + result.colo + " warp=" + result.status + " endpoint=" + activePort);
           firstResult(route);
           await done;
           throw exited.signal.reason;
         } catch (error) {
           deactivate();
           if (!lifetime.signal.aborted) {
-            log.warn("[warp] endpoint port " + activePort + " failed: " + (exited.signal.reason || error).message + diagnostic + ". Using direct egress.");
+            log.warn("[warp] endpoint " + activePort + " failed: " + (exited.signal.reason || error).message + diagnostic + ". Using direct egress.");
           }
           child.kill();
           await done;
           child = null;
           if (!verifiedOnce) {
             attempt++;
-            // Give up only once every candidate port has been tried.
-            if (attempt >= ports.length) { cleanup(); firstResult(null); return; }
+            // After every candidate failed once, carry on with direct egress
+            // but keep retrying in the background (once a minute).
+            if (attempt === endpoints.length) firstResult(null);
+            if (attempt >= endpoints.length) {
+              await delay(60_000, undefined, { signal: lifetime.signal }).catch(() => {});
+              continue;
+            }
           }
         }
         await delay(backoff, undefined, { signal: lifetime.signal });

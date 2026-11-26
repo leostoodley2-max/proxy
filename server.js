@@ -100,6 +100,8 @@ function precompressed(mount, dir, options) {
 
 // Accounts, data balances, top-up codes, saved sign-ins (see accounts.js).
 const accounts = createAccounts();
+// Stripe signs the exact bytes it sends, so the webhook needs the raw body.
+app.post("/api/stripe/webhook", express.raw({ type: "*/*", limit: "1mb" }), accounts.stripeWebhook);
 app.use("/api", accounts.router);
 
 // Pages that need a signed-in account: anyone else gets the front page.

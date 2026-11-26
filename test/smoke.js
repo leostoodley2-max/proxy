@@ -24,9 +24,34 @@ const PORT = 18000 + Math.floor(Math.random() * 1000);
 const BASE = "http://localhost:" + PORT;
 const TARGET = "https://example.com/";
 
+// A stand-in for Stripe's API: records calls and answers like Stripe does.
+const crypto = require("node:crypto");
+const STRIPE_WEBHOOK_SECRET = "whsec_test_secret";
+const stripeCalls = [];
+const stripeFake = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (c) => { body += c; });
+  req.on("end", () => {
+    stripeCalls.push({ path: req.url, auth: req.headers.authorization, params: Object.fromEntries(new URLSearchParams(body)) });
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (req.url === "/v1/checkout/sessions") return res.end(JSON.stringify({ id: "cs_test_1", url: BASE + "/fake-checkout" }));
+    if (req.url === "/v1/billing_portal/sessions") return res.end(JSON.stringify({ id: "bps_1", url: BASE + "/fake-portal" }));
+    res.end("{}");
+  });
+});
+// Sends a webhook event signed the way Stripe signs them.
+async function stripeEvent(event, secret = STRIPE_WEBHOOK_SECRET) {
+  const body = JSON.stringify(event);
+  const t = Math.floor(Date.now() / 1000);
+  const v1 = crypto.createHmac("sha256", secret).update(t + "." + body).digest("hex");
+  return fetch(BASE + "/api/stripe/webhook", { method: "POST", headers: { "Content-Type": "application/json", "Stripe-Signature": "t=" + t + ",v1=" + v1 }, body });
+}
+
 function startServer() {
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
-    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv() },
+    env: { ...process.env, PORT: String(PORT), WARP: "off", ORBIT_TEST_ALLOW_LOOPBACK: "1", ...accounts.serverEnv({
+      STRIPE_SECRET_KEY: "sk_test_fake", STRIPE_WEBHOOK_SECRET, STRIPE_API_BASE: "http://127.0.0.1:" + stripeFake.address().port,
+    }) },
     stdio: ["ignore", "pipe", "inherit"],
   });
   return new Promise((resolve, reject) => {
@@ -182,15 +207,16 @@ const tests = {
     assert.ok(proxied.length >= 5, "page and its scripts went through the proxy (" + proxied.length + ")");
     for (const u of proxied) {
       const path = new URL(u).pathname;
-      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "disguised: " + path);
-      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "page-disguise", "scramjet"]) {
+      assert.match(path, /^\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+\.%2F/, "disguised: " + path);
+      // The site (host) is hidden; the path stays percent-encoded (sites need it, see codec.js).
+      for (const leak of [host, encodeURIComponent(host), "127.0.0.1", "scramjet"]) {
         assert.ok(!u.includes(leak), "address leaks " + leak + ": " + u);
       }
     }
     // The address bar shows the disguised address too, and it can be typed back in.
     const shown = await page.inputValue("#address");
-    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+$/, "address bar: " + shown);
-    assert.ok(!shown.includes("127.0.0.1") && !shown.includes("page-disguise"), "address bar leaks: " + shown);
+    assert.match(shown, /\/study\/[a-z]+-[a-z]+-[A-Za-z0-9_-]+\.%2F/, "address bar: " + shown);
+    assert.ok(!shown.includes("127.0.0.1"), "address bar leaks the site: " + shown);
     assert.equal(await page.evaluate((text) => window.Engine.toUrl(text), shown), url);
     await context.close();
     for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
@@ -295,8 +321,9 @@ const tests = {
     assert.equal(await row.count(), 1);
     const cells = await row.locator("td").allTextContents();
     const bytes = (text) => parseFloat(text) * (/GB/.test(text) ? 1e9 : 1e6);
-    assert.ok(bytes(cells[2]) >= 2e6, "used today shows the 2 MB page: " + cells[2]);
-    assert.ok(bytes(cells[3]) >= bytes(cells[2]) && bytes(cells[4]) >= bytes(cells[3]), "30 days and all-time include today: " + cells.slice(2, 5));
+    // Columns: User, Plan, Extra data, Used today, Last 30 days, All time, ...
+    assert.ok(bytes(cells[3]) >= 2e6, "used today shows the 2 MB page: " + cells[3]);
+    assert.ok(bytes(cells[4]) >= bytes(cells[3]) && bytes(cells[5]) >= bytes(cells[4]), "30 days and all-time include today: " + cells.slice(3, 6));
     assert.match(await admin.textContent("#totals"), /accounts/);
     const balance = async () => (await (await page.request.get(BASE + "/api/me")).json()).user.balanceBytes / 1e9;
     const start = await balance();
@@ -315,11 +342,90 @@ const tests = {
     assert.equal(await balance(), 7);
     await act("Set to", 0);
     assert.equal(await balance(), 0);
-    assert.match(await row.locator("td").nth(1).textContent(), /^0\.0 MB$/);
+    assert.match(await row.locator("td").nth(2).textContent(), /^0\.0 MB$/);
     // At zero their browsing stops.
     await page.evaluate(() => window.OrbitAccount.refresh());
     await page.waitForSelector("#out-of-data:not([hidden])");
     await context.close();
+  },
+
+  async "monthly plan: Stripe checkout makes the account paid per billing month; signed webhooks only; manage and cancel"(browser) {
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    const me = async () => (await (await page.request.get(BASE + "/api/me")).json()).user;
+    const start = await me();
+    await page.click("#account-chip");
+    assert.equal(await page.textContent("#plan-action"), "Subscribe");
+    await page.click("#plan-action");
+    await page.waitForURL(BASE + "/fake-checkout");
+    const checkout = stripeCalls.find((c) => c.path === "/v1/checkout/sessions");
+    assert.equal(checkout.auth, "Bearer sk_test_fake");
+    assert.equal(checkout.params.mode, "subscription");
+    assert.equal(checkout.params["line_items[0][price_data][unit_amount]"], "199");
+    assert.equal(checkout.params["line_items[0][price_data][currency]"], "gbp");
+    assert.equal(checkout.params["line_items[0][price_data][recurring][interval]"], "month");
+    assert.match(checkout.params.success_url, /\/app\?subscribed=1$/);
+    const userId = checkout.params.client_reference_id;
+    assert.equal(checkout.params["subscription_data[metadata][user_id]"], userId);
+    // Stripe confirms the checkout and the first payment.
+    const periodEnd = Math.floor(Date.now() / 1000) + 30 * 86400;
+    assert.equal((await stripeEvent({ id: "evt_1", type: "checkout.session.completed", data: { object: { client_reference_id: userId, customer: "cus_1", subscription: "sub_1" } } })).status, 200);
+    const until = async () => (await me()).subscriptionUntil;
+    const firstInvoice = { id: "evt_2", type: "invoice.paid", data: { object: { id: "in_1", customer: "cus_1", amount_paid: 199,
+      parent: { subscription_details: { subscription: "sub_1", metadata: { user_id: userId } } }, lines: { data: [{ period: { end: periodEnd } }] } } } };
+    await stripeEvent(firstInvoice);
+    let now = await me();
+    assert.equal(now.subscriptionUntil, periodEnd * 1000, "first month: paid until the period end");
+    assert.equal(now.paid, true);
+    assert.equal(now.subscriptionStatus, "active");
+    // The same event again (Stripe retries) adds nothing; a forged one is refused.
+    await stripeEvent(firstInvoice);
+    assert.equal(await until(), now.subscriptionUntil, "no double credit");
+    const forged = await stripeEvent({ ...firstInvoice, id: "evt_forged" }, "whsec_wrong");
+    assert.equal(forged.status, 400);
+    assert.equal(await until(), now.subscriptionUntil, "forged event ignored");
+    // Next month's renewal (no metadata: found by subscription) adds another 10 GB.
+    await stripeEvent({ id: "evt_3", type: "invoice.paid", data: { object: { id: "in_2", customer: "cus_1", subscription: "sub_1", amount_paid: 199, lines: { data: [{ period: { end: periodEnd + 30 * 86400 } }] } } } });
+    assert.equal(await until(), (periodEnd + 30 * 86400) * 1000, "renewal extends the paid period");
+    // Back from checkout: thanks banner; the plan can be managed through Stripe's portal.
+    await page.goto(BASE + "/app?subscribed=1");
+    await page.waitForSelector("#subscribed-banner:not([hidden])");
+    await page.click("#account-chip");
+    await page.waitForFunction(() => document.getElementById("plan-action").textContent === "Manage or cancel");
+    assert.match(await page.textContent("#plan-status"), /Active/);
+    await page.click("#plan-action");
+    await page.waitForURL(BASE + "/fake-portal");
+    assert.equal(stripeCalls.find((c) => c.path === "/v1/billing_portal/sessions").params.customer, "cus_1");
+    // Cancelled in the portal: Stripe says so, and the account shows it.
+    await stripeEvent({ id: "evt_4", type: "customer.subscription.deleted", data: { object: { id: "sub_1", customer: "cus_1", status: "canceled" } } });
+    assert.equal((await me()).subscriptionStatus, "canceled");
+    const overview = await (await fetch(BASE + "/api/admin/overview", { headers: { "x-admin-password": accounts.ADMIN_PASSWORD } })).json();
+    assert.equal(overview.users.find((u) => String(u.id) === userId).subscription_status, "canceled");
+    await context.close();
+  },
+
+  async "data saver: ad servers are answered empty without downloading; the switch turns it off"(browser) {
+    const url = "http://127.0.0.1:" + site.address().port + "/page-saver";
+    const context = await browser.newContext();
+    const page = await openApp(context);
+    await loadTestPage(page, url);
+    const frame = page.frames().find((f) => f.url().includes(codec.encode(url)));
+    const probe = () => frame.evaluate(async () => {
+      const r = await fetch("https://googleads.g.doubleclick.net/pagead/id?orbit-test=" + Math.random());
+      return r.status;
+    });
+    assert.equal(await probe(), 204, "blocked by the data saver (on by default)");
+    assert.equal(await page.isChecked("#data-saver"), true);
+    // Off: the request goes out (and fails here, as this sandbox has no internet).
+    await page.click("#account-chip");
+    await page.uncheck("#data-saver");
+    await page.waitForTimeout(300);
+    assert.notEqual(await probe(), 204, "not blocked when the data saver is off");
+    await page.check("#data-saver");
+    await page.waitForTimeout(300);
+    assert.equal(await probe(), 204, "blocked again");
+    await context.close();
+    for (const key in hits) delete hits[key]; // the asset cache test counts these from zero
   },
 
   async "data: redeeming a code adds data, once"(browser) {
@@ -500,6 +606,7 @@ const tests = {
 
 
 (async () => {
+  await new Promise((resolve) => stripeFake.listen(0, "127.0.0.1", resolve));
   const server = await startServer();
   await new Promise((resolve) => site.listen(0, "127.0.0.1", resolve));
   const browser = accounts.signedIn(await chromium.launch(), () => "http://localhost:" + PORT);
@@ -517,6 +624,7 @@ const tests = {
   } finally {
     await browser.close();
     server.kill();
+    stripeFake.close();
     site.close();
   }
   if (failed) {

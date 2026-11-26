@@ -32,14 +32,20 @@ export default class ServerFetchTransport {
 const DROP_REQUEST = new Set(["host", "connection", "content-length", "accept-encoding", "transfer-encoding", "keep-alive", "upgrade", "te"]);
 const DROP_RESPONSE = new Set(["content-encoding", "content-length", "transfer-encoding", "connection", "keep-alive"]);
 
+// Bytes received from sites (as sent on the wire, before decompression), by host.
+const downloaded = new Map();
+
 module.exports = function install(app) {
   console.warn("[test] server-side fetch transport ENABLED (test only)");
+  app.get("/__test/bytes", (req, res) => {
+    res.json(Object.fromEntries(downloaded));
+  });
   app.get("/__test/transport.mjs", (req, res) => res.type("text/javascript").send(TRANSPORT));
   app.post("/__test/fetch", (req, res) => {
     const url = req.get("x-url"), method = req.get("x-method") || "GET";
     let headers = {};
     try { headers = JSON.parse(decodeURIComponent(req.get("x-headers") || "%7B%7D")); } catch {}
-    const args = ["-sS", "--compressed", "--suppress-connect-headers", "-D", "-", "-o", "-", "-X", method, "--max-time", "60"];
+    const args = ["-sS", "--compressed", "--suppress-connect-headers", "-D", "-", "-o", "-", "-X", method, "--max-time", "60", "-w", "%{stderr}\n@@bytes=%{size_download}+%{size_header}@@"];
     for (const [name, value] of Object.entries(headers)) {
       if (DROP_REQUEST.has(name.toLowerCase())) continue;
       for (const v of [].concat(value)) args.push("-H", name + ": " + v);
@@ -78,6 +84,12 @@ module.exports = function install(app) {
         }
       });
       curl.on("close", (code) => {
+        const m = /@@bytes=(\d+)\+(\d+)@@/.exec(errors);
+        if (m) {
+          const host = new URL(url).hostname;
+          downloaded.set(host, (downloaded.get(host) || 0) + Number(m[1]) + Number(m[2]));
+          errors = errors.replace(m[0], "").trim();
+        }
         if (!started) return res.status(599).type("text").send(errors || "curl exited " + code);
         res.end();
       });

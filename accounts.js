@@ -9,6 +9,8 @@
 //   ADMIN_PASSWORD   enables /admin.html (make codes, see users); unset = disabled
 //   SIGNUP_GB        free data for new accounts, in GB (default 0)
 //   AUTH_ATTEMPTS_PER_MINUTE  sign-up/sign-in/redeem attempts per IP (default 10)
+//   STRIPE_SECRET_KEY      enables the monthly plan (Stripe Checkout); never commit it
+//   STRIPE_WEBHOOK_SECRET  signing secret of the Stripe webhook (whsec_...)
 
 "use strict";
 
@@ -21,6 +23,7 @@ const GB = 1_000_000_000;
 const SESSION_DAYS = 30;
 const COOKIE = "orbit_session";
 const MAX_JAR_BYTES = 2 * 1024 * 1024;
+const PLAN_PRICE_PENCE = 199;  // £1.99 a month
 
 function open(dataDir) {
   // node:sqlite prints an "experimental" warning once; it is stable in practice.
@@ -58,6 +61,11 @@ function open(dataDir) {
       version INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    -- Stripe events already handled, so a payment is never credited twice.
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      id TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL
+    );
     -- Data used per account per day (UTC), for the admin page.
     CREATE TABLE IF NOT EXISTS usage_daily (
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -69,6 +77,9 @@ function open(dataDir) {
   // Columns added after the first release.
   const columns = db.prepare("PRAGMA table_info(users)").all().map((c) => c.name);
   if (!columns.includes("last_active")) db.exec("ALTER TABLE users ADD COLUMN last_active INTEGER");
+  for (const column of ["stripe_customer_id", "stripe_subscription_id", "subscription_status"]) {
+    if (!columns.includes(column)) db.exec("ALTER TABLE users ADD COLUMN " + column + " TEXT");
+  }
   return db;
 }
 
@@ -145,7 +156,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     claimCode: db.prepare("UPDATE codes SET redeemed_by = ?, redeemed_at = ? WHERE code = ? AND redeemed_by IS NULL"),
     code: db.prepare("SELECT * FROM codes WHERE code = ?"),
     codes: db.prepare("SELECT codes.*, users.username AS redeemed_by_name FROM codes LEFT JOIN users ON users.id = codes.redeemed_by ORDER BY created_at DESC LIMIT 200"),
-    users: db.prepare(`SELECT u.id, u.username, u.balance_bytes, u.used_bytes, u.created_at, u.last_active, u.subscription_until,
+    users: db.prepare(`SELECT u.id, u.username, u.balance_bytes, u.used_bytes, u.created_at, u.last_active, u.subscription_status, u.subscription_until,
         COALESCE((SELECT bytes FROM usage_daily WHERE user_id = u.id AND day = ?), 0) AS used_today,
         COALESCE((SELECT SUM(bytes) FROM usage_daily WHERE user_id = u.id AND day >= ?), 0) AS used_30d
       FROM users u ORDER BY COALESCE(u.last_active, u.created_at) DESC LIMIT 2000`),
@@ -187,6 +198,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     return {
       username: u.username, balanceBytes: u.balance_bytes, usedBytes: u.used_bytes,
       subscriptionUntil: u.subscription_until || null,
+      subscriptionStatus: u.subscription_status || null,
       paid: isPaid(u),
       dailyAllowanceBytes: allowance,
       usedTodayBytes: usedToday,
@@ -292,7 +304,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
       pricing: {
         pencePerGb: 25,
         freeDailyGb: dailyFreeBytes / GB,
-        subscription: { pounds: 1.99, dailyGb: dailyPaidBytes / GB, available: false },
+        subscription: { pounds: 1.99, dailyGb: dailyPaidBytes / GB, available: !!stripeKey },
       },
     });
   });
@@ -317,6 +329,127 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     q.putJar.run(req.user.id, text, Date.now());
     res.json({ version: q.jar.get(req.user.id).version });
   });
+
+  // --- Monthly plan (Stripe) --------------------------------------------------
+  // Checkout and the billing portal are Stripe-hosted pages; Stripe tells us
+  // about payments through the webhook, which makes the account paid (bigger
+  // daily allowance) until the end of each paid billing period: the first
+  // month and every renewal.
+  const stripeKey = process.env.STRIPE_SECRET_KEY || "";
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || "";
+  const stripeApi = (process.env.STRIPE_API_BASE || "https://api.stripe.com").replace(/\/$/, "");
+  const stripeQ = {
+    seen: db.prepare("INSERT OR IGNORE INTO stripe_events (id, created_at) VALUES (?, ?)"),
+    byCustomer: db.prepare("SELECT * FROM users WHERE stripe_customer_id = ?"),
+    bySubscription: db.prepare("SELECT * FROM users WHERE stripe_subscription_id = ?"),
+    link: db.prepare("UPDATE users SET stripe_customer_id = COALESCE(?, stripe_customer_id), stripe_subscription_id = COALESCE(?, stripe_subscription_id) WHERE id = ?"),
+    // A paid month makes the account "paid" (bigger daily allowance) until the end
+    // of that billing period; never shortens a later date set by the admin.
+    paid: db.prepare("UPDATE users SET subscription_status = 'active', subscription_until = MAX(COALESCE(subscription_until, 0), ?) WHERE id = ?"),
+    status: db.prepare("UPDATE users SET subscription_status = ? WHERE id = ?"),
+  };
+  // Stripe takes form-encoded parameters with brackets for nesting.
+  function form(params, prefix = "", out = new URLSearchParams()) {
+    for (const [key, value] of Object.entries(params)) {
+      const name = prefix ? prefix + "[" + key + "]" : key;
+      if (value === undefined || value === null) continue;
+      if (typeof value === "object") form(value, name, out);
+      else out.append(name, String(value));
+    }
+    return out;
+  }
+  async function stripe(pathname, params) {
+    const res = await fetch(stripeApi + "/v1/" + pathname, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + stripeKey, "Content-Type": "application/x-www-form-urlencoded" },
+      body: form(params),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error((data.error && data.error.message) || "Stripe returned HTTP " + res.status);
+    return data;
+  }
+  const siteUrl = (req) => req.protocol + "://" + req.get("host");
+  const subscribed = (u) => ["active", "trialing", "past_due"].includes(u.subscription_status);
+
+  router.post("/stripe/checkout", requireUser, async (req, res) => {
+    if (!stripeKey) return res.status(503).json({ error: "The monthly plan isn't available yet." });
+    const user = q.userById.get(req.user.id);
+    if (subscribed(user)) return res.status(409).json({ error: "You already have the monthly plan." });
+    try {
+      const session = await stripe("checkout/sessions", {
+        mode: "subscription",
+        line_items: [{ quantity: 1, price_data: { currency: "gbp", unit_amount: Math.round(PLAN_PRICE_PENCE), recurring: { interval: "month" },
+          product_data: { name: "Monthly plan (" + dailyPaidBytes / GB + " GB a day)" } } }],
+        customer: user.stripe_customer_id || undefined,
+        client_reference_id: String(user.id),
+        metadata: { user_id: String(user.id) },
+        subscription_data: { metadata: { user_id: String(user.id) } },
+        success_url: siteUrl(req) + "/app?subscribed=1",
+        cancel_url: siteUrl(req) + "/app",
+      });
+      res.json({ url: session.url });
+    } catch (error) {
+      log.warn("[stripe] checkout failed: " + error.message);
+      res.status(502).json({ error: "Couldn't start the payment. Try again in a moment." });
+    }
+  });
+  router.post("/stripe/portal", requireUser, async (req, res) => {
+    const user = q.userById.get(req.user.id);
+    if (!stripeKey || !user.stripe_customer_id) return res.status(404).json({ error: "No monthly plan on this account." });
+    try {
+      const session = await stripe("billing_portal/sessions", { customer: user.stripe_customer_id, return_url: siteUrl(req) + "/app" });
+      res.json({ url: session.url });
+    } catch (error) {
+      log.warn("[stripe] portal failed: " + error.message);
+      res.status(502).json({ error: "Couldn't open the plan settings. Try again in a moment." });
+    }
+  });
+
+  // Stripe-Signature: t=<unix time>,v1=<hex HMAC-SHA256 of "t.body">
+  function verifiedEvent(raw, header) {
+    const parts = Object.fromEntries(String(header || "").split(",").map((p) => p.split("=")).filter((p) => p.length === 2).map(([k, v]) => [k, v]));
+    const signatures = String(header || "").split(",").filter((p) => p.startsWith("v1=")).map((p) => p.slice(3));
+    const t = Number(parts.t);
+    if (!webhookSecret || !t || !signatures.length || Math.abs(Date.now() / 1000 - t) > 300) return null;
+    const expected = Buffer.from(crypto.createHmac("sha256", webhookSecret).update(t + "." + raw).digest("hex"));
+    const ok = signatures.some((s) => s.length === expected.length && crypto.timingSafeEqual(Buffer.from(s), expected));
+    return ok ? JSON.parse(raw) : null;
+  }
+  function userForStripe(object, metadata) {
+    const id = Number(metadata && metadata.user_id);
+    return (id && q.userById.get(id)) ||
+      (object.subscription && stripeQ.bySubscription.get(String(object.subscription))) ||
+      (object.customer && stripeQ.byCustomer.get(String(object.customer))) || null;
+  }
+  function stripeWebhook(req, res) {
+    const raw = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "";
+    const event = verifiedEvent(raw, req.get("stripe-signature"));
+    if (!event) return res.status(400).json({ error: "Bad signature." });
+    if (stripeQ.seen.run(event.id, Date.now()).changes === 0) return res.json({ received: true, duplicate: true });
+    const o = event.data && event.data.object || {};
+    if (event.type === "checkout.session.completed") {
+      const user = userForStripe(o, { user_id: o.client_reference_id || (o.metadata && o.metadata.user_id) });
+      if (user) stripeQ.link.run(o.customer || null, o.subscription || null, user.id);
+    } else if (event.type === "invoice.paid") {
+      const metadata = (o.parent && o.parent.subscription_details && o.parent.subscription_details.metadata) ||
+        (o.subscription_details && o.subscription_details.metadata) || {};
+      const subscription = o.subscription || (o.parent && o.parent.subscription_details && o.parent.subscription_details.subscription);
+      const user = userForStripe({ ...o, subscription }, metadata);
+      if (!user) log.warn("[stripe] paid invoice " + o.id + " for an unknown account");
+      else if (o.amount_paid > 0) {
+        const line = o.lines && o.lines.data && o.lines.data[0];
+        const periodEnd = ((line && line.period && line.period.end) || o.period_end || 0) * 1000;
+        stripeQ.link.run(o.customer || null, subscription || null, user.id);
+        // No period end on the invoice: give 31 days.
+        stripeQ.paid.run(periodEnd || Date.now() + 31 * 86400_000, user.id);
+        log.log("[stripe] " + user.username + ": monthly plan paid until " + new Date(periodEnd || Date.now() + 31 * 86400_000).toISOString());
+      }
+    } else if (event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
+      const user = userForStripe({ subscription: o.id, customer: o.customer }, o.metadata);
+      if (user) stripeQ.status.run(event.type.endsWith("deleted") ? "canceled" : String(o.status), user.id);
+    }
+    res.json({ received: true });
+  }
 
   // --- Admin (owner) ----------------------------------------------------------
   const adminLimit = limiter(Math.max(20, perMinute));
@@ -389,7 +522,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
   });
 
   log.log("[accounts] database at " + path.join(dataDir, "orbit.db") + (adminPassword ? "; admin enabled" : "; admin disabled (no ADMIN_PASSWORD)"));
-  return { router, userFromRequest, admitWisp, close: () => db.close() };
+  return { router, stripeWebhook, userFromRequest, admitWisp, close: () => db.close() };
 }
 
 module.exports = { createAccounts, GB };

@@ -1,5 +1,5 @@
 // Service worker: every request made by a proxied page passes through here.
-importScripts("/scram/scramjet.all.js?v=2", "/codec.js");
+importScripts("/scram/scramjet.all.js?v=2", "/codec.js", "/datasaver.js");
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
@@ -141,7 +141,7 @@ self.addEventListener("activate", (event) => event.waitUntil((async () => {
 // response for as long as the site itself allows, following the same rules
 // as the browser's own cache. Bump the version whenever Scramjet or its
 // settings change, since that changes the rewritten output.
-const ASSET_CACHE = "orbit-assets-v2"; // v2: disguised addresses (codec.js)
+const ASSET_CACHE = "orbit-assets-v3"; // v3: site-only disguise (codec.js)
 // "" is fetch()/XMLHttpRequest: game engines (Unity, Godot...) load their
 // large .wasm/.data files that way.
 const CACHEABLE = new Set(["script", "style", "font", "image", "worker", "sharedworker", ""]);
@@ -213,10 +213,52 @@ function withoutMarker(response) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// --- Data saver (see datasaver.js): on unless the person turns it off -------
+const SETTINGS = "/__orbit/settings.json";
+let settings = null;
+async function loadSettings() {
+  if (settings) return settings;
+  try {
+    const saved = await (await caches.open("orbit-diagnostics")).match(SETTINGS);
+    settings = saved ? await saved.json() : {};
+  } catch (e) {
+    settings = {};
+  }
+  return settings;
+}
+const dataSaverOn = async () => (await loadSettings()).dataSaver !== false;
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "orbit-data-saver") return;
+  event.waitUntil((async () => {
+    (await loadSettings()).dataSaver = !!event.data.on;
+    await (await caches.open("orbit-diagnostics")).put(SETTINGS, new Response(JSON.stringify(settings)));
+  })());
+});
+// Requests the data saver stopped this session (shown in the browser).
+let savedRequests = 0;
+
 async function handleRequest(event) {
   await scramjet.loadConfig();
   if (!scramjet.route(event)) return fetch(event.request);
+  const real = realUrl(event.request.url);
+  if (await dataSaverOn()) {
+    if (OrbitDataSaver.blocked(real)) {
+      savedRequests++;
+      return OrbitDataSaver.emptyResponse(event.request.destination);
+    }
+    if (real.includes("googlevideo.com/videoplayback") && event.clientId) {
+      const page = await self.clients.get(event.clientId);
+      if (page && OrbitDataSaver.youtubePreview(real, realUrl(page.url))) {
+        savedRequests++;
+        return new Response(null, { status: 204 });
+      }
+    }
+    if (OrbitDataSaver.isYouTubeApi(real)) return OrbitDataSaver.cleanYouTube(await handleProxied(event));
+  }
+  return handleProxied(event);
+}
 
+async function handleProxied(event) {
   const request = event.request;
   // A proxied address opened on its own in a browser tab (typed, pasted,
   // bookmarked: no referrer) goes to the revision front page instead of the
