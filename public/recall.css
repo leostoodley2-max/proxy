@@ -86,3 +86,63 @@ dialog label { display: grid; gap: 4px; font-size: 14px; font-weight: 600; margi
   .card-row .back { grid-column: 1; }
   nav .solid { display: none; }
 }
+
+/* ---- Dark theme ---------------------------------------------------------- */
+:root[data-theme="dark"] {
+  --bg: #15181c; --ink: #e7eae6; --muted: #9aa49e; --line: #2c3139; --panel: #1c2026;
+  --accent: #5bb59a; --accent-ink: #0d1412; --soft: #3a4a44; --danger: #e4756a;
+  color-scheme: dark;
+}
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] textarea { background: #11141a; }
+:root[data-theme="dark"] .deck,
+:root[data-theme="dark"] .card-row,
+:root[data-theme="dark"] .flashcard { background: #171b21; }
+:root[data-theme="dark"] button.ghost:hover { background: #232832; }
+:root[data-theme="dark"] .flashcard.flipped { background: #16211d; border-color: #2f5d50; }
+
+/* ---- New controls -------------------------------------------------------- */
+button.icon { padding: 7px 10px; font-size: 16px; line-height: 1; }
+select { border: 1px solid var(--line); border-radius: 9px; padding: 8px 11px; background: #fff; color: var(--ink); font: inherit; }
+:root[data-theme="dark"] select { background: #11141a; }
+textarea { width: 100%; border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: #fff; color: var(--ink); font: inherit; resize: vertical; margin: 6px 0 8px; }
+:root[data-theme="dark"] textarea { background: #11141a; }
+
+.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.streak { margin-top: 4px; color: var(--accent); font-weight: 600; }
+
+.due-badge { display: inline-block; margin-top: 8px; background: var(--soft); color: var(--ink); font-size: 12px; font-weight: 700; border-radius: 99px; padding: 1px 8px; }
+
+.deck-meta { color: var(--muted); font-size: 14px; margin-bottom: 14px; }
+.study-setup { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.study-setup label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); font-weight: 600; }
+
+details.bulk { margin: 0 0 16px; }
+details.bulk summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 14px; }
+details.bulk code { background: var(--soft); border-radius: 5px; padding: 0 4px; font-size: 13px; }
+
+/* card rows: star / edit / reorder / delete */
+.card-row.due { border-color: var(--accent); }
+.card-tools { display: flex; gap: 4px; align-items: center; }
+.card-tools button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 4px; border-radius: 6px; }
+.card-tools button:hover { background: var(--soft); color: var(--ink); }
+.card-tools .star.on { color: #e3a81e; }
+.card-tools .del:hover { color: var(--danger); }
+
+/* study: type + choice modes */
+.type-area, .choice-area { margin-top: 4px; }
+.prompt { font-size: clamp(20px, 3vw, 26px); font-weight: 600; text-align: center; margin: 10px 0 18px; overflow-wrap: anywhere; }
+.type-form { display: flex; gap: 8px; justify-content: center; }
+.type-form input { flex: 1 1 320px; max-width: 420px; }
+.type-feedback { text-align: center; font-weight: 600; margin-top: 14px; }
+.type-feedback.ok { color: var(--accent); }
+.type-feedback.bad { color: var(--danger); }
+.choice-list { display: grid; gap: 10px; max-width: 520px; margin: 0 auto; }
+button.choice { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 14px 16px; cursor: pointer; color: var(--ink); font-weight: 500; }
+button.choice:hover:not(:disabled) { border-color: var(--accent); }
+button.choice.right { background: #e6f3ee; border-color: var(--accent); color: var(--ink); }
+button.choice.wrong { background: #f7e4e1; border-color: var(--danger); }
+:root[data-theme="dark"] button.choice.right { background: #17241f; }
+:root[data-theme="dark"] button.choice.wrong { background: #2a1b19; }
+.shortcuts { text-align: center; color: var(--muted); font-size: 13px; margin: 14px 0 0; }

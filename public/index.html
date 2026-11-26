@@ -4,10 +4,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f4ef">
-  <meta name="description" content="Recall: flashcards and a focus timer for revision.">
+  <meta name="description" content="Recall: flashcards, spaced repetition and a focus timer for revision.">
   <title>Recall · Revision flashcards</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='4' y='7' width='22' height='16' rx='3' fill='%23e9d7a6'/%3E%3Crect x='7' y='10' width='22' height='16' rx='3' fill='%232f5d50'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/recall.css">
+  <!-- Set the colour theme before first paint to avoid a flash (inline, same-origin). -->
+  <script>
+    try {
+      var t = localStorage.getItem("recall.theme");
+      if (!t) t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      document.documentElement.dataset.theme = t;
+    } catch (e) {}
+  </script>
   <script src="/recall.js" defer></script>
 </head>
 <body>
@@ -17,6 +25,7 @@
       Recall
     </a>
     <nav aria-label="Account">
+      <button id="theme-toggle" class="ghost icon" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">🌙</button>
       <span id="who" class="who" hidden></span>
       <button id="open-signin" class="ghost" type="button">Sign in</button>
       <button id="open-signup" class="solid" type="button">Create account</button>
@@ -27,8 +36,14 @@
   <main>
     <section class="hero" id="hero">
       <h1>Revise smarter, one card at a time.</h1>
-      <p>Make flashcard decks for any subject, test yourself, and keep focused with a built-in study timer.
+      <p>Make flashcard decks for any subject, test yourself with spaced repetition, and keep focused with a built-in study timer.
         Your decks are saved in this browser. Create an account to keep separate decks for each person who uses it.</p>
+      <div class="hero-actions">
+        <button id="review-due" class="solid" type="button" hidden>Review due cards</button>
+        <button id="import-all" class="ghost" type="button">Import deck…</button>
+        <button id="export-all" class="ghost" type="button">Export all</button>
+        <input id="import-file" type="file" accept="application/json,.json" hidden>
+      </div>
     </section>
 
     <div class="layout">
@@ -53,6 +68,7 @@
         </div>
         <p class="hint">25 minutes of study, then a 5 minute break.</p>
         <div class="stats"><strong id="sessions">0</strong> study sessions today</div>
+        <div class="stats streak" id="streak"></div>
       </aside>
     </div>
 
@@ -61,15 +77,47 @@
         <button id="back" class="ghost" type="button">← All decks</button>
         <h2 id="deck-title"></h2>
         <div class="deck-actions">
-          <button id="study" class="solid" type="button">Study</button>
+          <button id="export-deck" class="ghost" type="button">Export</button>
           <button id="delete-deck" class="ghost danger" type="button">Delete deck</button>
         </div>
       </div>
+
+      <div class="deck-meta" id="deck-meta"></div>
+
+      <div class="study-setup">
+        <label>Cards
+          <select id="study-scope" aria-label="Which cards to study">
+            <option value="due">Due today</option>
+            <option value="all">All cards</option>
+            <option value="starred">Starred only</option>
+          </select>
+        </label>
+        <label>Mode
+          <select id="study-mode" aria-label="Study mode">
+            <option value="flip">Flip</option>
+            <option value="type">Type the answer</option>
+            <option value="choice">Multiple choice</option>
+          </select>
+        </label>
+        <button id="study" class="solid" type="button">Study</button>
+        <button id="shuffle" class="ghost" type="button">Shuffle</button>
+      </div>
+
       <form id="new-card" class="card-form">
         <input id="card-front" placeholder="Question / term" maxlength="300" required aria-label="Question">
         <input id="card-back" placeholder="Answer / definition" maxlength="600" required aria-label="Answer">
         <button class="solid" type="submit">Add card</button>
       </form>
+
+      <details class="bulk">
+        <summary>Add many at once</summary>
+        <p class="hint">One card per line, as <code>term, definition</code> or <code>term⭾definition</code> (tab).</p>
+        <textarea id="bulk" rows="5" placeholder="Mitochondria, Powerhouse of the cell
+Osmosis, Diffusion of water across a membrane"></textarea>
+        <button id="bulk-add" class="solid" type="button">Add cards</button>
+        <p id="bulk-result" class="hint" hidden></p>
+      </details>
+
       <ul id="card-list" class="card-list"></ul>
     </section>
 
@@ -80,16 +128,33 @@
         <span id="study-progress" class="progress-text"></span>
       </div>
       <div class="progress"><div id="progress-bar"></div></div>
+
       <button id="flashcard" class="flashcard" type="button" aria-live="polite">
         <span id="card-side" class="side">Question</span>
         <span id="card-text" class="card-text"></span>
         <span class="tap">Click to flip</span>
       </button>
-      <div class="grade">
+
+      <div id="type-area" class="type-area" hidden>
+        <div class="prompt" id="type-prompt"></div>
+        <form id="type-form" class="type-form">
+          <input id="type-input" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type the answer" aria-label="Your answer">
+          <button class="solid" type="submit">Check</button>
+        </form>
+        <p id="type-feedback" class="type-feedback" hidden></p>
+      </div>
+
+      <div id="choice-area" class="choice-area" hidden>
+        <div class="prompt" id="choice-prompt"></div>
+        <div id="choice-list" class="choice-list"></div>
+      </div>
+
+      <div class="grade" id="grade" hidden>
         <button id="again" class="ghost" type="button">Again</button>
         <button id="got-it" class="solid" type="button">Got it</button>
       </div>
-      <p id="study-done" class="done" hidden>Deck complete! Cards you marked "Again" will come up first next time.</p>
+      <p class="shortcuts" id="shortcuts">Shortcuts: Space reveal · 1 Again · 2 Got it · Esc finish</p>
+      <p id="study-done" class="done" hidden>Deck complete! Cards you missed come back sooner.</p>
     </section>
   </main>
 
@@ -106,6 +171,18 @@
         <button id="auth-submit" class="solid" type="submit">Sign in</button>
       </div>
       <p class="switch"><button id="auth-switch" class="link" type="button">No account? Create one</button></p>
+    </form>
+  </dialog>
+
+  <dialog id="edit" aria-labelledby="edit-title">
+    <form id="edit-form" method="dialog">
+      <h2 id="edit-title">Edit card</h2>
+      <label>Question<input id="edit-front" required maxlength="300" spellcheck="false"></label>
+      <label>Answer<input id="edit-back" required maxlength="600"></label>
+      <div class="dialog-actions">
+        <button id="edit-cancel" class="ghost" type="button">Cancel</button>
+        <button id="edit-save" class="solid" type="submit">Save</button>
+      </div>
     </form>
   </dialog>
 </body>
