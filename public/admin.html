@@ -52,6 +52,16 @@
       <p id="users-result" class="muted"></p>
     </section>
 
+    <h2>Paid plan</h2>
+    <form id="sub" class="box">
+      <p class="muted" style="margin-top:0">Free accounts get 1&nbsp;GB a day. Marking an account paid gives it 3&nbsp;GB a day for the number of days you set (added on to any time it already has).</p>
+      <label>Username<input id="sub-user" autocomplete="off" required></label>
+      <label>Days<input id="sub-days" type="number" min="1" max="3650" value="30"></label>
+      <button type="button" id="sub-add">Mark paid</button>
+      <button type="button" id="sub-clear" class="secondary">Back to free</button>
+      <p class="muted" id="sub-result"></p>
+    </form>
+
     <h2>Make top-up codes</h2>
     <form id="make" class="box">
       <label>GB per code<input id="gb" type="number" min="0.1" max="1000" step="0.1" value="4" required></label>
@@ -100,7 +110,7 @@
 
     function renderTotals(t) {
       const stats = [
-        [t.users, "accounts"], [size(t.balanceBytes), "data left (all accounts)"],
+        [t.users, "accounts"], [size(t.balanceBytes), "extra data (all accounts)"],
         [size(t.usedToday), "used today"], [size(t.used30d), "used in the last 30 days"],
         [size(t.usedBytes), "used in total"],
       ];
@@ -116,12 +126,14 @@
     function renderUsers(flashName) {
       const table = $("users");
       table.replaceChildren();
-      header(table, ["User", "Data left", "Used today", "Last 30 days", "All time", "Last active", "Joined", "Change data"]);
+      header(table, ["User", "Plan", "Extra data", "Used today", "Last 30 days", "All time", "Last active", "Joined", "Change data"]);
       const filter = $("search").value.trim().toLowerCase();
       for (const u of users.filter((u) => u.username.toLowerCase().includes(filter))) {
         const row = table.insertRow();
         if (u.username === flashName) row.className = "flash";
         cell(row, u.username);
+        const paid = u.subscription_until && u.subscription_until > Date.now();
+        cell(row, paid ? "Paid" : "Free", paid ? "" : "muted").title = paid ? "3 GB/day until " + when(u.subscription_until) : "1 GB/day";
         cell(row, size(u.balance_bytes), "num" + (u.balance_bytes <= 0 ? " zero" : ""));
         cell(row, size(u.used_today), "num");
         cell(row, size(u.used_30d), "num");
@@ -196,6 +208,19 @@
         load();
       } catch (err) { $("new-codes").textContent = err.message; }
     });
+    async function subscribe(action) {
+      const username = $("sub-user").value.trim();
+      if (!username) { $("sub-result").textContent = "Enter a username."; return; }
+      try {
+        const data = await api("subscription", { username, action, days: Number($("sub-days").value) });
+        await load(username);
+        $("sub-result").textContent = data.user.username + (data.user.paid
+          ? " is paid until " + new Date(data.user.subscriptionUntil).toLocaleString() + " (3 GB/day)."
+          : " is back on the free plan (1 GB/day).");
+      } catch (e) { $("sub-result").textContent = e.message; }
+    }
+    $("sub-add").addEventListener("click", () => subscribe("add"));
+    $("sub-clear").addEventListener("click", () => subscribe("clear"));
     $("search").addEventListener("input", () => renderUsers());
     $("gb").addEventListener("input", updateCharge);
     $("count").addEventListener("input", updateCharge);

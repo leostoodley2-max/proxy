@@ -7,6 +7,12 @@ app = 'revisionhelper'
 primary_region = 'lhr'
 
 [build]
+
+# Accounts, balances and saved sign-ins live in SQLite under DATA_DIR. It must
+# point at the mounted volume below, or every machine stop wipes all of it.
+[env]
+  DATA_DIR = '/data'
+
 [http_service]
   internal_port = 8080
   force_https = true
@@ -14,6 +20,11 @@ primary_region = 'lhr'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+
+# Persistent disk for the SQLite database (survives deploys and machine stops).
+[mounts]
+  source = 'data'
+  destination = '/data'
 
 [[vm]]
   memory = '1gb'

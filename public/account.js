@@ -88,14 +88,21 @@
 
   // ---- Data left and top-ups -------------------------------------------------
   function paint() {
-    const left = me.balanceBytes;
+    // Data left to spend now = today's unused allowance + any extra balance.
+    const allowanceLeft = me.allowanceLeftBytes ?? me.balanceBytes ?? 0;
+    const extra = me.balanceBytes ?? 0;
+    const left = allowanceLeft + extra;
+    const perDay = me.dailyAllowanceBytes ?? 0;
     const chip = $("account-chip");
     chip.textContent = gb(left) + " GB";
-    chip.title = me.username + ": " + gb(left) + " GB of data left";
-    chip.classList.toggle("low", left < 0.5 * GB);
+    chip.title = me.username + ": " + gb(allowanceLeft) + " GB left today"
+      + (extra > 0 ? " + " + gb(extra) + " GB extra" : "")
+      + " · " + (me.paid ? "paid " : "free ") + gb(perDay) + " GB/day";
+    chip.classList.toggle("low", left < 0.1 * GB);
     $("account-name").textContent = me.username;
     $("account-left").textContent = gb(left) + " GB";
-    $("account-used").textContent = gb(me.usedBytes) + " GB used so far";
+    $("account-used").textContent = gb(me.usedTodayBytes ?? 0) + " GB used today"
+      + (me.usedBytes ? " · " + gb(me.usedBytes) + " GB in total" : "");
     const empty = left <= 0;
     $("out-of-data").hidden = !empty;
   }

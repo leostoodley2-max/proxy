@@ -122,6 +122,12 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
   const db = open(dataDir);
   const signupBytes = Math.round(Number(process.env.SIGNUP_GB || 0) * GB);
   const adminPassword = process.env.ADMIN_PASSWORD || "";
+  // Daily data allowances (reset at UTC midnight): everyone gets DAILY_FREE_GB
+  // a day; accounts with an active subscription get DAILY_PAID_GB a day. Redeem
+  // codes and admin top-ups add to balance_bytes, which is only spent once the
+  // day's allowance has been used up.
+  const dailyFreeBytes = Math.round(Number(process.env.DAILY_FREE_GB ?? 1) * GB);
+  const dailyPaidBytes = Math.round(Number(process.env.DAILY_PAID_GB ?? 3) * GB);
   const q = {
     userByName: db.prepare("SELECT * FROM users WHERE username = ?"),
     userById: db.prepare("SELECT * FROM users WHERE id = ?"),
@@ -139,14 +145,30 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     claimCode: db.prepare("UPDATE codes SET redeemed_by = ?, redeemed_at = ? WHERE code = ? AND redeemed_by IS NULL"),
     code: db.prepare("SELECT * FROM codes WHERE code = ?"),
     codes: db.prepare("SELECT codes.*, users.username AS redeemed_by_name FROM codes LEFT JOIN users ON users.id = codes.redeemed_by ORDER BY created_at DESC LIMIT 200"),
-    users: db.prepare(`SELECT u.id, u.username, u.balance_bytes, u.used_bytes, u.created_at, u.last_active,
+    users: db.prepare(`SELECT u.id, u.username, u.balance_bytes, u.used_bytes, u.created_at, u.last_active, u.subscription_until,
         COALESCE((SELECT bytes FROM usage_daily WHERE user_id = u.id AND day = ?), 0) AS used_today,
         COALESCE((SELECT SUM(bytes) FROM usage_daily WHERE user_id = u.id AND day >= ?), 0) AS used_30d
       FROM users u ORDER BY COALESCE(u.last_active, u.created_at) DESC LIMIT 2000`),
     jar: db.prepare("SELECT jar, version FROM cookie_jars WHERE user_id = ?"),
     putJar: db.prepare("INSERT INTO cookie_jars (user_id, jar, version, updated_at) VALUES (?, ?, 1, ?) ON CONFLICT(user_id) DO UPDATE SET jar = excluded.jar, version = version + 1, updated_at = excluded.updated_at"),
+    usedTodayRow: db.prepare("SELECT bytes FROM usage_daily WHERE user_id = ? AND day = ?"),
+    setSubscription: db.prepare("UPDATE users SET subscription_until = ? WHERE id = ?"),
   };
   setInterval(() => q.dropExpired.run(Date.now()), 3600_000).unref();
+
+  // --- Daily allowance helpers ----------------------------------------------
+  const utcDay = () => new Date().toISOString().slice(0, 10);
+  const isPaid = (u) => !!(u && u.subscription_until && u.subscription_until > Date.now());
+  const dailyAllowanceBytes = (u) => (isPaid(u) ? dailyPaidBytes : dailyFreeBytes);
+  function usedTodayBytes(userId) {
+    const row = q.usedTodayRow.get(userId, utcDay());
+    return row ? row.bytes : 0;
+  }
+  // Data the user may still spend right now: today's unused allowance plus any
+  // extra balance from codes / top-ups.
+  function availableBytes(u) {
+    return Math.max(0, dailyAllowanceBytes(u) - usedTodayBytes(u.id)) + u.balance_bytes;
+  }
 
   function userFromRequest(req) {
     const token = parseCookies(req.headers.cookie)[COOKIE];
@@ -158,10 +180,20 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     q.addSession.run(sha256(token), userId, Date.now() + SESSION_DAYS * 86400_000);
     res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure, maxAge: SESSION_DAYS * 86400_000, path: "/" });
   }
-  const publicUser = (u) => ({
-    username: u.username, balanceBytes: u.balance_bytes, usedBytes: u.used_bytes,
-    subscriptionUntil: u.subscription_until || null,
-  });
+  const publicUser = (u) => {
+    const allowance = dailyAllowanceBytes(u);
+    const usedToday = usedTodayBytes(u.id);
+    const allowanceLeft = Math.max(0, allowance - usedToday);
+    return {
+      username: u.username, balanceBytes: u.balance_bytes, usedBytes: u.used_bytes,
+      subscriptionUntil: u.subscription_until || null,
+      paid: isPaid(u),
+      dailyAllowanceBytes: allowance,
+      usedTodayBytes: usedToday,
+      allowanceLeftBytes: allowanceLeft,
+      availableBytes: allowanceLeft + u.balance_bytes,
+    };
+  };
 
   // --- Data metering --------------------------------------------------------
   // Every proxied byte goes through the Wisp WebSocket. Count each socket's
@@ -169,16 +201,24 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
   // seconds; close the socket when the balance runs out.
   const metered = new Set(); // { socket, userId, counted }
   function chargeAll() {
+    const day = utcDay();
     for (const m of metered) {
       const total = m.socket.bytesRead + m.socket.bytesWritten;
       const delta = total - m.counted;
       if (delta > 0) {
         m.counted = total;
-        q.charge.run(delta, delta, Date.now(), m.userId);
-        q.logUsage.run(m.userId, new Date().toISOString().slice(0, 10), delta);
+        const user = q.userById.get(m.userId);
+        if (user) {
+          // Spend today's free/paid allowance first; only the overflow comes
+          // out of the account's extra balance.
+          const allowanceLeft = Math.max(0, dailyAllowanceBytes(user) - usedTodayBytes(m.userId));
+          const fromBalance = Math.max(0, delta - allowanceLeft);
+          q.charge.run(fromBalance, delta, Date.now(), m.userId);
+          q.logUsage.run(m.userId, day, delta);
+        }
       }
       const user = q.userById.get(m.userId);
-      if (!user || user.balance_bytes <= 0) m.socket.destroy();
+      if (!user || availableBytes(user) <= 0) m.socket.destroy();
     }
   }
   setInterval(chargeAll, 3000).unref();
@@ -190,7 +230,7 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
       return false;
     };
     if (!user) return refuse(401, "Unauthorized");
-    if (user.balance_bytes <= 0) return refuse(402, "Payment Required");
+    if (availableBytes(user) <= 0) return refuse(402, "Payment Required");
     const entry = { socket, userId: user.id, counted: 0 };
     metered.add(entry);
     socket.once("close", () => {
@@ -247,7 +287,14 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
   });
   router.get("/me", requireUser, (req, res) => {
     chargeAll();
-    res.json({ user: publicUser(q.userById.get(req.user.id)), pricing: { pencePerGb: 25, subscription: { pounds: 1.99, gb: 10, available: false } } });
+    res.json({
+      user: publicUser(q.userById.get(req.user.id)),
+      pricing: {
+        pencePerGb: 25,
+        freeDailyGb: dailyFreeBytes / GB,
+        subscription: { pounds: 1.99, dailyGb: dailyPaidBytes / GB, available: false },
+      },
+    });
   });
   router.post("/redeem", requireUser, (req, res) => {
     if (!redeemLimit(ip(req)) || !redeemLimit("user:" + req.user.id)) return res.status(429).json({ error: "Too many attempts. Wait a minute and try again." });
@@ -319,6 +366,25 @@ function createAccounts({ dataDir = process.env.DATA_DIR || path.join(__dirname,
     const user = q.userByName.get(String(req.body.username || ""));
     if (!user) return res.status(404).json({ error: "No such user." });
     q.credit.run(Math.round(Number(req.body.gb || 0) * GB), user.id);
+    res.json({ user: publicUser(q.userById.get(user.id)) });
+  });
+  // Mark an account as paid (gets the bigger daily allowance) for a number of
+  // days, or clear it back to free. "add" extends from the current expiry if
+  // the subscription is still active.
+  router.post("/admin/subscription", requireAdmin, (req, res) => {
+    const user = q.userByName.get(String(req.body.username || ""));
+    if (!user) return res.status(404).json({ error: "No such user." });
+    let until;
+    if (req.body.action === "clear") {
+      until = null;
+    } else {
+      const days = Number(req.body.days);
+      if (!Number.isFinite(days) || days <= 0) return res.status(400).json({ error: "Enter a number of days (more than 0)." });
+      const base = isPaid(user) ? user.subscription_until : Date.now();
+      until = base + days * 86400_000;
+    }
+    q.setSubscription.run(until, user.id);
+    chargeAll();
     res.json({ user: publicUser(q.userById.get(user.id)) });
   });
 
