@@ -98,13 +98,18 @@ async function credentials(log, signal) {
   return config;
 }
 
-function wireConfig(config, port) {
+function splitEndpoint(endpoint) {
+  const match = /^(\[[a-f0-9:]+\]|[^:]+):(\d{1,5})$/i.exec(endpoint);
+  return match ? { host: match[1], port: Number(match[2]) } : { host: endpoint, port: 2408 };
+}
+
+function wireConfig(config, port, endpoint = config.endpoint) {
   const addresses = [config.address.v4 && config.address.v4 + "/32",
     config.address.v6 && config.address.v6 + "/128"].filter(Boolean);
   return [
     "[Interface]", "PrivateKey = " + config.privateKey, "Address = " + addresses.join(", "),
     "DNS = 1.1.1.1", "", "[Peer]", "PublicKey = " + config.peerPublicKey,
-    "Endpoint = " + config.endpoint, "AllowedIPs = 0.0.0.0/0, ::/0", "PersistentKeepalive = 25",
+    "Endpoint = " + endpoint, "AllowedIPs = 0.0.0.0/0, ::/0", "PersistentKeepalive = 25",
     "", "[Socks5]", "BindAddress = 127.0.0.1:" + port, "",
   ].join("\n");
 }
@@ -183,13 +188,22 @@ async function startWarp({ log = console } = {}) {
     lifetime.signal.throwIfAborted();
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "wisp-warp-"));
     const file = path.join(dir, "wireproxy.conf");
-    fs.writeFileSync(file, wireConfig(config, route.socksPort), { mode: 0o600 });
+    // Cloudflare WARP accepts the WireGuard handshake on several UDP ports. If
+    // the network blocks the default (2408) we try the alternatives in turn,
+    // rewriting the wireproxy config for each attempt.
+    const { host: warpHost, port: warpPort } = splitEndpoint(config.endpoint);
+    const portsEnv = (process.env.WARP_ENDPOINT_PORTS || "").split(",").map(Number).filter(Boolean);
+    const ports = [...new Set([warpPort, ...(portsEnv.length ? portsEnv : [2408, 500, 1701, 4500])])];
     let firstResult;
     const ready = new Promise(resolve => { firstResult = resolve; });
     async function supervise() {
       let verifiedOnce = false;
+      let attempt = 0;        // which candidate port to try before the first success
+      let activePort = ports[0];
       let backoff = 500;
       while (!lifetime.signal.aborted) {
+        if (!verifiedOnce) activePort = ports[attempt % ports.length];
+        fs.writeFileSync(file, wireConfig(config, route.socksPort, warpHost + ":" + activePort), { mode: 0o600 });
         const exited = new AbortController();
         child = launch(binary, file);
         // Surface recognizable OS diagnostics on failure. Raw child output
@@ -214,19 +228,23 @@ async function startWarp({ log = console } = {}) {
           egress = { warp: true, ip: result.ip, colo: result.colo };
           activeRoute = route;
           verifiedOnce = true;
-          log.info("[warp] Verified ip=" + result.ip + " colo=" + result.colo + " warp=" + result.status);
+          log.info("[warp] Verified ip=" + result.ip + " colo=" + result.colo + " warp=" + result.status + " port=" + activePort);
           firstResult(route);
           await done;
           throw exited.signal.reason;
         } catch (error) {
           deactivate();
           if (!lifetime.signal.aborted) {
-            log.warn("[warp] " + (exited.signal.reason || error).message + diagnostic + ". Using direct egress.");
+            log.warn("[warp] endpoint port " + activePort + " failed: " + (exited.signal.reason || error).message + diagnostic + ". Using direct egress.");
           }
           child.kill();
           await done;
           child = null;
-          if (!verifiedOnce) { cleanup(); firstResult(null); return; }
+          if (!verifiedOnce) {
+            attempt++;
+            // Give up only once every candidate port has been tried.
+            if (attempt >= ports.length) { cleanup(); firstResult(null); return; }
+          }
         }
         await delay(backoff, undefined, { signal: lifetime.signal });
         backoff = Math.min(5000, backoff * 2);
