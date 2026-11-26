@@ -8,23 +8,16 @@ primary_region = 'lhr'
 
 [build]
 
-# Accounts, balances and saved sign-ins live in SQLite under DATA_DIR. It must
-# point at the mounted volume below, or every machine stop wipes all of it.
-[env]
-  DATA_DIR = '/data'
-
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  # Keep one machine always running so the SQLite database (accounts, balances,
+  # saved sign-ins) is not wiped when the machine would otherwise stop on idle.
+  # Note: without a persistent volume the database still resets on each deploy.
+  auto_stop_machines = 'off'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
-
-# Persistent disk for the SQLite database (survives deploys and machine stops).
-[mounts]
-  source = 'data'
-  destination = '/data'
 
 [[vm]]
   memory = '1gb'
